@@ -34,6 +34,13 @@ services:
     networks:
       - media
 
+  redis:
+    image: redis:8.2.3-alpine
+    container_name: usenet_redis
+    networks:
+      - media
+    restart: unless-stopped
+
   nzbdav:
     image: nzbdav/nzbdav:alpha
     container_name: nzbdav
