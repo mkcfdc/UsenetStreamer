@@ -81,7 +81,14 @@ export async function proxyNzbdavStream(
     }
 
     const ac = new AbortController();
-    res.on("close", () => ac.abort());
+    let aborted = false;
+    res.on("close", () => {
+        if (!aborted) {
+            aborted = true;
+            try { ac.abort(); } catch { }
+            console.warn("[NZBDAV] Client disconnected, aborting upstream fetch");
+        }
+    });
 
     const upstream = await fetch(targetUrl, {
         method: upstreamMethod,
