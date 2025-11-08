@@ -10,6 +10,7 @@
     "npm:cors@^2.8.5": "2.8.5",
     "npm:express@^5.1.0": "5.1.0",
     "npm:ioredis@^5.8.2": "5.8.2",
+    "npm:lru-cache@^11.2.2": "11.2.2",
     "npm:webdav@^5.8.0": "5.8.0"
   },
   "jsr": {
@@ -348,6 +349,9 @@
     "lodash.isarguments@3.1.0": {
       "integrity": "sha512-chi4NHZlZqZD18a0imDHnZPrDeBbTtVN7GXMwuGdRH9qotxAjYs3aVLKc7zNOG9eddR5Ksd8rvFEBc9SsggPpg=="
     },
+    "lru-cache@11.2.2": {
+      "integrity": "sha512-F9ODfyqML2coTIsQpSkRHnLSZMtkU8Q+mSfcaIyKwy58u+8k5nvAYeiNhsyMARvzNcXJ9QfWVrcPsC9e9rAxtg=="
+    },
     "math-intrinsics@1.1.0": {
       "integrity": "sha512-/IXtbwEk5HTPyEwyKX6hGkYXxM9nbj64B+ilVJnC/R6B0pH5G4V3b0pVbL7DBj4tkhBAppbQUlf6F6Xl9LHu1g=="
     },
@@ -619,6 +623,7 @@
       "npm:cors@^2.8.5",
       "npm:express@^5.1.0",
       "npm:ioredis@^5.8.2",
+      "npm:lru-cache@^11.2.2",
       "npm:webdav@^5.8.0"
     ]
   }

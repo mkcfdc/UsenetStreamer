@@ -21,5 +21,11 @@
   "forwardPorts": [
     8000
   ],
-  "workspaceFolder": "/app"
+  "runArgs": [
+    "--volume",
+    "/run/host-services/ssh-auth.sock:/run/host-services/ssh-auth.sock"
+  ],
+  "containerEnv": {
+    "SSH_AUTH_SOCK": "/run/host-services/ssh-auth.sock"
+  }
 }

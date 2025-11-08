@@ -2,6 +2,7 @@
 import { getJsonValue, redis, setJsonValue } from "../utils/redis.ts";
 import { getWebdavClient } from "../utils/webdav.ts";
 import type { Request, Response } from "express";
+import { LRUCache as LRU } from 'lru-cache'
 import { findBestVideoFile } from "../utils/findBestVideoFile.ts";
 import { streamFailureVideo } from "./streamFailureVideo.ts";
 import { parseRequestedEpisode } from "../utils/parseRequestedEpisode.ts";
@@ -187,40 +188,25 @@ async function waitForNzbdavHistorySlot(nzoId: string, category: string): Promis
     );
 }
 
-const nzbdavStreamCache = new Map();
-const NZBDAV_CACHE_TTL_MS = 3600000; // Existing cache for NZBDav stream data
+const NZBDAV_CACHE_TTL_MS = 3600000; // 1 hour
+const STREAM_METADATA_CACHE_TTL_MS = 60000; // 1 minute
 
-const streamMetadataCache = new Map<string, { data: StreamCache; expiresAt: number | null }>();
-const STREAM_METADATA_CACHE_TTL_MS = 60000; // Cache for 1 minute, adjust as needed
+const NZBDAV_CACHE_MAX_ITEMS = 100;
+const STREAM_METADATA_CACHE_MAX_ITEMS = 500;
 
-function cleanupNzbdavCache() {
-    if (NZBDAV_CACHE_TTL_MS <= 0) {
-        return;
-    }
+// LRU cache for NZBDAV streams
+const nzbdavStreamCache = new LRU<string, any>({
+    max: NZBDAV_CACHE_MAX_ITEMS,
+    ttl: NZBDAV_CACHE_TTL_MS,
+});
 
-    const now = Date.now();
-    for (const [key, entry] of nzbdavStreamCache.entries()) {
-        if (entry.expiresAt && entry.expiresAt <= now) {
-            nzbdavStreamCache.delete(key);
-        }
-    }
-}
-
-function cleanupStreamMetadataCache() {
-    if (STREAM_METADATA_CACHE_TTL_MS <= 0) {
-        return;
-    }
-
-    const now = Date.now();
-    for (const [key, entry] of streamMetadataCache.entries()) {
-        if (entry.expiresAt && entry.expiresAt <= now) {
-            streamMetadataCache.delete(key);
-        }
-    }
-}
+// LRU cache for stream metadata
+const streamMetadataCache = new LRU<string, { data: StreamCache }>({
+    max: STREAM_METADATA_CACHE_MAX_ITEMS,
+    ttl: STREAM_METADATA_CACHE_TTL_MS,
+});
 
 async function getOrCreateNzbdavStream(cacheKey: string, builder: () => Promise<any>) {
-    cleanupNzbdavCache();
     const existing = nzbdavStreamCache.get(cacheKey);
 
     if (existing) {
@@ -240,7 +226,6 @@ async function getOrCreateNzbdavStream(cacheKey: string, builder: () => Promise<
         nzbdavStreamCache.set(cacheKey, {
             status: "ready",
             data,
-            expiresAt: NZBDAV_CACHE_TTL_MS > 0 ? Date.now() + NZBDAV_CACHE_TTL_MS : null,
         });
         return data;
     })();
@@ -249,17 +234,97 @@ async function getOrCreateNzbdavStream(cacheKey: string, builder: () => Promise<
 
     try {
         return await promise;
-    } catch (error) {
-        if ((error as any)?.isNzbdavFailure) {
+    } catch (error: any) {
+        if (error?.isNzbdavFailure) {
             nzbdavStreamCache.set(cacheKey, {
                 status: "failed",
                 error,
-                expiresAt: NZBDAV_CACHE_TTL_MS > 0 ? Date.now() + NZBDAV_CACHE_TTL_MS : null,
             });
         } else {
             nzbdavStreamCache.delete(cacheKey);
         }
         throw error;
+    }
+}
+
+export async function streamNzbdavProxy(
+    keyHash: string,
+    req: Request,
+    res: Response,
+) {
+    const redisKey = `streams:${keyHash}`;
+
+    let meta = streamMetadataCache.get(redisKey)?.data || null;
+
+    if (!meta) {
+        meta = await getJsonValue<StreamCache>(redisKey);
+        if (meta) {
+            streamMetadataCache.set(redisKey, { data: meta });
+        }
+    }
+
+    if (!meta) {
+        const served = await streamFailureVideo(req, res);
+        if (!served && !res.headersSent) res.status(502).json({ error: "This shit is broke as fuuuuck" });
+        return;
+    }
+
+    const { downloadUrl, type = "movie", title = "NZB Stream", prowlarrId } = meta;
+    const id = (meta as any).id ?? "";
+
+    const category = getNzbdavCategory(type);
+    const episode = parseRequestedEpisode(type, id, req.query as QueryParams);
+
+    const cacheKey = [
+        downloadUrl,
+        category,
+        episode ? `${episode.season}x${episode.episode}` : undefined,
+    ].join("|");
+
+    try {
+        const streamData = await getOrCreateNzbdavStream(cacheKey, () =>
+            buildNzbdavStream({ downloadUrl, category, title, requestedEpisode: episode })
+        );
+
+        await proxyNzbdavStream(req, res, streamData.viewPath, streamData.fileName ?? "");
+    } catch (err: any) {
+        const msg = err.message ?? String(err);
+        const isNzbdavFail = !!err.isNzbdavFailure;
+
+        if (isNzbdavFail) {
+            console.warn("[NZBDAV] Failed → cleaning up", err.failureMessage || msg);
+
+            await redis.del(redisKey);
+
+            if (prowlarrId && downloadUrl) {
+                const searchKey = `prowlarr:search:${prowlarrId}`;
+                const script = `
+          local key = KEYS[1]
+          local url = ARGV[1]
+          local arr = redis.call('JSON.GET', key, '$[0]') or '[]'
+          arr = cjson.decode(arr)
+          local idx = -1
+          for i = 1, #arr do
+            if arr[i].downloadUrl == url then idx = i-1 break end
+          end
+          if idx >= 0 then
+            redis.call('JSON.ARRPOP', key, '$', idx)
+            local len = redis.call('JSON.ARRLEN', key, '$[0]') or 0
+            if len == 0 then redis.call('DEL', key) end
+            return 1
+          end
+          return 0
+        `;
+                await redis.eval(script, 1, searchKey, downloadUrl);
+            }
+
+            const served = await streamFailureVideo(req, res, err);
+            if (!served && !res.headersSent) res.status(502).json({ error: err.failureMessage || msg });
+            return;
+        }
+
+        console.error("[NZBDAV] Proxy error:", msg);
+        if (!res.headersSent) res.status(err.response?.status || 502).json({ error: msg });
     }
 }
 
@@ -305,103 +370,14 @@ async function buildNzbdavStream({
         viewPath: bestFile.viewPath,
         size: bestFile.size,
         fileName: bestFile.name,
+        downloadUrl: downloadUrl,
+        title: title,
     };
 
     await setJsonValue(cacheKey, '$', result);
     console.log(`[NZBDAV] Stream ready: ${result.viewPath}`);
 
     return result;
-}
-
-export async function streamNzbdavProxy(
-    keyHash: string,
-    req: Request,
-    res: Response,
-) {
-    const redisKey = `streams:${keyHash}`;
-    cleanupStreamMetadataCache();
-
-    let meta = streamMetadataCache.get(redisKey)?.data || null;
-
-    if (!meta) {
-        meta = await getJsonValue<StreamCache>(redisKey);
-        if (meta) {
-            streamMetadataCache.set(redisKey, {
-                data: meta,
-                expiresAt: STREAM_METADATA_CACHE_TTL_MS > 0
-                    ? Date.now() + STREAM_METADATA_CACHE_TTL_MS
-                    : null,
-            });
-        }
-    }
-
-    if (!meta) {
-        //@TODO: An "old link" video would be cool here
-        const served = await streamFailureVideo(req, res);
-        if (!served && !res.headersSent) res.status(502).json({ error: "This shit is broke as fuuuuck" });
-        return;
-    }
-
-    const { downloadUrl, type = "movie", title = "NZB Stream", prowlarrId } = meta;
-    const id = (meta as any).id ?? "";
-
-    const category = getNzbdavCategory(type);
-    const episode = parseRequestedEpisode(type, id, req.query as QueryParams);
-
-    const cacheKey = [
-        downloadUrl,
-        category,
-        episode ? `${episode.season}x${episode.episode}` : undefined,
-    ].join("|");
-
-    try {
-        const streamData = await getOrCreateNzbdavStream(cacheKey, () =>
-            buildNzbdavStream({ downloadUrl, category, title, requestedEpisode: episode })
-        );
-
-        await proxyNzbdavStream(req, res, streamData.viewPath, streamData.fileName ?? "");
-    } catch (err: any) {
-        const msg = err.message ?? String(err);
-        const isNzbdavFail = !!err.isNzbdavFailure;
-
-        if (isNzbdavFail) {
-            console.warn("[NZBDAV] Failed → cleaning up", err.failureMessage || msg);
-
-            // Clean everything in one go
-            await redis.del(redisKey);
-
-            if (prowlarrId && downloadUrl) {
-                const searchKey = `prowlarr:search:${prowlarrId}`;
-                const script = `
-          local key = KEYS[1]
-          local url = ARGV[1]
-          local arr = redis.call('JSON.GET', key, '$[0]') or '[]'
-          arr = cjson.decode(arr)
-          local idx = -1
-          for i = 1, #arr do
-            if arr[i].downloadUrl == url then idx = i-1 break end
-          end
-          if idx >= 0 then
-            redis.call('JSON.ARRPOP', key, '$', idx)
-            local len = redis.call('JSON.ARRLEN', key, '$[0]') or 0
-            if len == 0 then redis.call('DEL', key) end
-            return 1
-          end
-          return 0
-        `;
-
-                await redis.eval(script, 1, searchKey, downloadUrl);
-            }
-
-            const served = await streamFailureVideo(req, res, err);
-            if (!served && !res.headersSent) res.status(502).json({ error: err.failureMessage || msg });
-            return;
-        }
-
-        // Generic error
-        console.error("[NZBDAV] Proxy error:", msg);
-        if (!res.headersSent) res.status(err.response?.status || 502).json({ error: msg });
-    }
 }
 
 export async function proxyNzbdavStream(

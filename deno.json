@@ -10,6 +10,7 @@
     "cors": "npm:cors@^2.8.5",
     "express": "npm:express@^5.1.0",
     "ioredis": "npm:ioredis@^5.8.2",
+    "lru-cache": "npm:lru-cache@^11.2.2",
     "webdav": "npm:webdav@^5.8.0"
   }
 }
