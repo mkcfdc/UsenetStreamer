@@ -136,5 +136,6 @@ export async function proxyNzbdavStream(
         return;
     }
 
-    Readable.fromWeb(upstream.body).pipe(res);
+    // upstream.body is a Web ReadableStream from fetch; cast it to the Node stream/web ReadableStream of Uint8Array
+    Readable.fromWeb(upstream.body as unknown as import("stream/web").ReadableStream<Uint8Array>).pipe(res);
 }

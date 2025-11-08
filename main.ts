@@ -79,12 +79,12 @@ app.get("/stream/:type/:imdbId", async (req: Request, res: Response) => {
             const existingTuple = existingResults[idx];
             const existingRaw = existingTuple && !existingTuple[0] ? existingTuple[1] : null;
 
-            let name = 'NEW';
+            let name = '';
 
             if (existingRaw) {
                 try {
                     const data = JSON.parse(existingRaw)[0];
-                    if (data?.nzoId) name = 'CACHED';
+                    if (data?.nzoId) name = '⚡';
                 } catch {
                     // JSON parse failed, treat as NEW
                 }
