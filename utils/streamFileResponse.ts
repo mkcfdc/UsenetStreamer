@@ -1,89 +1,119 @@
-import { Request, Response } from "express";
-
 export async function streamFileResponse(
     req: Request,
-    res: Response,
     path: string,
-    head = false,
-    log = "STREAM",
+    isHead = false,
+    logPrefix = "STREAM",
     preStat?: Deno.FileInfo,
-): Promise<boolean> {
+    initialHeaders: Headers = new Headers(),
+): Promise<Response | null> {
     let stat = preStat;
+
+    // 1. Stat the file
     if (!stat) {
         try {
             stat = await Deno.stat(path);
         } catch (e) {
-            if (e instanceof Deno.errors.NotFound) return false;
+            if (e instanceof Deno.errors.NotFound) return null;
             throw e;
         }
     }
-    if (!stat.isFile) return false;
+    if (!stat.isFile) return null;
 
     const size = stat.size;
-    res.set("Accept-Ranges", "bytes")
-        .set("Last-Modified", stat.mtime?.toUTCString() ?? "")
-        .type("video/mp4");
-
-    if (head) {
-        res.set("Content-Length", size.toString()).status(200).end();
-        console.log(`[${log}] HEAD ${path}`);
-        return true;
-    }
-
+    let code = 200;
     let start = 0;
     let end = size - 1;
-    let code = 200;
+    let responseBody: BodyInit | null = null;
 
-    const m = req.headers.range?.match(/^bytes=(\d*)-(\d*)$/);
+    // 2. Set base headers
+    const finalHeaders = new Headers(initialHeaders);
+    finalHeaders.set("Accept-Ranges", "bytes");
+    finalHeaders.set("Content-Type", "video/mp4");
+    if (stat.mtime) {
+        finalHeaders.set("Last-Modified", stat.mtime.toUTCString());
+    }
+
+    // 3. Handle HEAD request
+    if (isHead) {
+        finalHeaders.set("Content-Length", size.toString());
+        console.log(`[${logPrefix}] HEAD ${path}`);
+        return new Response(null, { status: 200, headers: finalHeaders });
+    }
+
+    // 4. Handle Range request
+    const rangeHeader = req.headers.get("Range");
+    const m = rangeHeader?.match(/^bytes=(\d*)-(\d*)$/);
+
     if (m) {
         const s = m[1] ? Number(m[1]) : 0;
         const e = m[2] ? Number(m[2]) : size - 1;
+
         if (s >= size) {
-            res.status(416).set("Content-Range", `bytes */${size}`).end();
-            return true;
+            // Range out of bounds
+            finalHeaders.set("Content-Range", `bytes */${size}`);
+            return new Response(null, { status: 416, headers: finalHeaders });
         }
+
         start = s;
         end = e < size ? e : size - 1;
         code = 206;
     }
 
     const length = end - start + 1;
-    res.status(code)
-        .set("Content-Length", length.toString());
-    if (code === 206) res.set("Content-Range", `bytes ${start}-${end}/${size}`);
-    console.log(`[${log}] ${code} ${start}-${end}/${size} ${path}`);
 
-    let file: Deno.FsFile | null = null;
-    try {
-        file = await Deno.open(path, { read: true });
-        await file.seek(start, Deno.SeekMode.Start);
-
-        let sent = 0;
-        for await (const chunk of file.readable) {
-            if (res.destroyed) break;
-
-            const remain = length - sent;
-            if (chunk.byteLength > remain) {
-                res.write(chunk.subarray(0, remain));
-                break;
-            }
-            res.write(chunk);
-            sent += chunk.byteLength;
-        }
-        res.end();
-    } catch (err) {
-        const msg = (err as Error)?.message ?? "";
-        if (!msg.includes("Broken pipe") && !msg.includes("aborted") && err?.name !== "AbortError") {
-            console.error(`[${log}] stream error`, err);
-        }
-    } finally {
-        if (file !== null) {
-            try { file.close(); } catch {
-                //
-            }
-            file = null;
-        }
+    finalHeaders.set("Content-Length", length.toString());
+    if (code === 206) {
+        finalHeaders.set("Content-Range", `bytes ${start}-${end}/${size}`);
     }
 
-    return true;
+    console.log(`[${logPrefix}] ${code} ${start}-${end}/${size} ${path}`);
+
+    try {
+        const file = await Deno.open(path, { read: true });
+
+        let bytesSent = 0;
+
+        if (start !== 0) {
+            await file.seek(start, Deno.SeekMode.Start);
+        }
+
+        const limitedStream = file.readable.pipeThrough(new TransformStream({
+            transform(chunk, controller) {
+                const remaining = length - bytesSent;
+
+                if (remaining <= 0) {
+                    controller.terminate();
+                    return;
+                }
+
+                if (chunk.byteLength > remaining) {
+                    const slice = chunk.subarray(0, remaining);
+                    controller.enqueue(slice);
+                    bytesSent += slice.byteLength;
+                    controller.terminate();
+                } else {
+                    controller.enqueue(chunk);
+                    bytesSent += chunk.byteLength;
+                }
+            },
+            flush() {
+                file.close();
+            }
+        }));
+
+        responseBody = limitedStream;
+
+    } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err ?? "");
+        const name = err instanceof Error ? err.name : undefined;
+        if (!msg.includes("Broken pipe") && !msg.includes("aborted") && name !== "AbortError") {
+            console.error(`[${logPrefix}] stream error`, err);
+        }
+        return null;
+    }
+
+    return new Response(responseBody, {
+        status: code,
+        headers: finalHeaders,
+    });
 }

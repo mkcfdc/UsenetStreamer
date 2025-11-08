@@ -1,11 +1,10 @@
 // deno-lint-ignore-file no-explicit-any
 import { getJsonValue, redis, setJsonValue } from "../../utils/redis.ts";
-import type { Request, Response } from "express";
 import { LRUCache as LRU } from 'lru-cache';
 import { findBestVideoFile } from "../../utils/findBestVideoFile.ts";
 import { streamFailureVideo } from "../streamFailureVideo.ts";
 import { parseRequestedEpisode } from "../../utils/parseRequestedEpisode.ts";
-import type { EpisodeInfo, QueryParams } from "../../utils/parseRequestedEpisode.ts";
+import type { EpisodeInfo } from "../../utils/parseRequestedEpisode.ts";
 import { proxyNzbdavStream } from "./proxyNzbdav.ts";
 import { buildNzbdavApiParams, getNzbdavCategory, sleep } from "./nzbUtils.ts";
 
@@ -224,12 +223,13 @@ async function getOrCreateNzbdavStream(cacheKey: string, builder: () => Promise<
 export async function streamNzbdavProxy(
     keyHash: string,
     req: Request,
-    res: Response,
-) {
+): Promise<Response> {
     const redisKey = `streams:${keyHash}`;
+    const url = new URL(req.url);
 
     let meta = streamMetadataCache.get(redisKey)?.data || null;
 
+    // 1. Fetch metadata
     if (!meta) {
         meta = await getJsonValue<StreamCache>(redisKey);
         if (meta) {
@@ -237,17 +237,24 @@ export async function streamNzbdavProxy(
         }
     }
 
+    // 2. Handle missing metadata
     if (!meta) {
-        const served = await streamFailureVideo(req, res);
-        if (!served && !res.headersSent) res.status(502).json({ error: "This shit is broke as fuuuuck" });
-        return;
+        const failureResponse = await streamFailureVideo(req);
+        if (failureResponse) return failureResponse;
+
+        // If failure video also failed, send the final error
+        return new Response(JSON.stringify({ error: "This shit is broke as fuuuuck" }), {
+            status: 502,
+            headers: { "Content-Type": "application/json" }
+        });
     }
 
+    // 3. Prepare stream parameters
     const { downloadUrl, type = "movie", title = "NZB Stream", prowlarrId } = meta;
     const id = (meta as any).id ?? "";
 
     const category = getNzbdavCategory(type);
-    const episode = parseRequestedEpisode(type, id, req.query as QueryParams);
+    const episode = parseRequestedEpisode(type, id, url.searchParams);
 
     const cacheKey = [
         downloadUrl,
@@ -255,16 +262,19 @@ export async function streamNzbdavProxy(
         episode ? `${episode.season}x${episode.episode}` : undefined,
     ].join("|");
 
+    // 4. Get or create NZBDav stream
     try {
         const streamData = await getOrCreateNzbdavStream(cacheKey, () =>
             buildNzbdavStream({ downloadUrl, category, title, requestedEpisode: episode })
         );
 
-        await proxyNzbdavStream(req, res, streamData.viewPath, streamData.fileName ?? "");
+        return await proxyNzbdavStream(req, streamData.viewPath, streamData.fileName ?? "");
+
     } catch (err: any) {
         const msg = err.message ?? String(err);
         const isNzbdavFail = !!err.isNzbdavFailure;
 
+        // 6. Handle NZBDav failures
         if (isNzbdavFail) {
             console.warn("[NZBDAV] Failed → cleaning up", err.failureMessage || msg);
 
@@ -273,32 +283,41 @@ export async function streamNzbdavProxy(
             if (prowlarrId && downloadUrl) {
                 const searchKey = `prowlarr:search:${prowlarrId}`;
                 const script = `
-          local key = KEYS[1]
-          local url = ARGV[1]
-          local arr = redis.call('JSON.GET', key, '$[0]') or '[]'
-          arr = cjson.decode(arr)
-          local idx = -1
-          for i = 1, #arr do
-            if arr[i].downloadUrl == url then idx = i-1 break end
-          end
-          if idx >= 0 then
-            redis.call('JSON.ARRPOP', key, '$', idx)
-            local len = redis.call('JSON.ARRLEN', key, '$[0]') or 0
-            if len == 0 then redis.call('DEL', key) end
-            return 1
-          end
-          return 0
+        local key = KEYS[1]
+        local url = ARGV[1]
+        local arr = redis.call('JSON.GET', key, '$[0]') or '[]'
+        arr = cjson.decode(arr)
+        local idx = -1
+        for i = 1, #arr do
+          if arr[i].downloadUrl == url then idx = i-1 break end
+        end
+        if idx >= 0 then
+          redis.call('JSON.ARRPOP', key, '$', idx)
+          local len = redis.call('JSON.ARRLEN', key, '$[0]') or 0
+          if len == 0 then redis.call('DEL', key) end
+          return 1
+        end
+        return 0
         `;
                 await redis.eval(script, 1, searchKey, downloadUrl);
             }
 
-            const served = await streamFailureVideo(req, res, err);
-            if (!served && !res.headersSent) res.status(502).json({ error: err.failureMessage || msg });
-            return;
+            const failureResponse = await streamFailureVideo(req, err);
+            if (failureResponse) return failureResponse;
+
+            return new Response(JSON.stringify({ error: err.failureMessage || msg }), {
+                status: 502,
+                headers: { "Content-Type": "application/json" }
+            });
         }
 
+        // 7. Handle other errors
         console.error("[NZBDAV] Proxy error:", msg);
-        if (!res.headersSent) res.status(err.response?.status || 502).json({ error: msg });
+        const status = err.response?.status || 502;
+        return new Response(JSON.stringify({ error: msg }), {
+            status: status,
+            headers: { "Content-Type": "application/json" }
+        });
     }
 }
 
