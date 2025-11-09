@@ -109,6 +109,7 @@ async function waitForNzbdavHistorySlot(nzoId: string, category: string): Promis
             start: "0",
             limit: "50",
             category: category,
+            nzo_ids: nzoId, // return less data.
         });
 
         const url = new URL(`${NZBDAV_URL}/api`);

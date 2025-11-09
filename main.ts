@@ -46,122 +46,145 @@ async function handler(req: Request): Promise<Response> {
         return textResponse("Hello, the server is running! This is using the mkcfdc version of UsenetStreamer by Sanket9225.");
     }
 
-    if (pathname === "/manifest.json" && method === "GET") {
-        const manifest = {
-            id: "com.usenet.streamer",
-            version: "1.0.1",
-            name: "UsenetStreamer",
-            description:
-                "Usenet-powered instant streams for Stremio via Prowlarr and NZBDav",
-            logo: `${ADDON_BASE_URL.replace(/\/$/, "")}/assets/icon.png`,
-            resources: ["stream"],
-            types: ["movie", "series"],
-            catalogs: [],
-            idPrefixes: ["tt"],
-        };
-        return jsonResponse(manifest);
+    if (pathname.endsWith("/manifest.json") && method === "GET") {
+        const expectedKeySegmentLength = pathname.length - "/manifest.json".length;
+        const apiKeyFromPath = pathname.substring(1, expectedKeySegmentLength);
+
+        if (apiKeyFromPath === Deno.env.get("ADDON_SHARED_SECRET")) {
+            const manifest = {
+                id: "com.usenet.streamer",
+                version: "1.0.1",
+                name: "UsenetStreamer",
+                description:
+                    "Usenet-powered instant streams for Stremio via Prowlarr and NZBDav",
+                logo: `${ADDON_BASE_URL.replace(/\/$/, "")}/assets/icon.png`,
+                resources: ["stream"],
+                types: ["movie", "series"],
+                catalogs: [],
+                idPrefixes: ["tt"],
+            };
+            return jsonResponse(manifest);
+        } else {
+            return jsonResponse({ error: "Unauthorized" }, 401);
+        }
     }
 
-    // /stream/:type/:imdbId
-    const streamMatch = pathname.match(/^\/stream\/(movie|series)\/(.+)$/);
+    const streamMatch = pathname.match(new RegExp(`^/([^/]+)/stream/(movie|series)/(.+)$`));
     if (streamMatch && method === "GET") {
-        const type = streamMatch[1] as "movie" | "series";
-        const imdbIdParam = streamMatch[2];
-        const decodedIdParam = decodeURIComponent(imdbIdParam);
+        const apiKeyFromPath = streamMatch[1];
+        const type = streamMatch[2] as "movie" | "series";
+        const imdbId = streamMatch[3];
 
-        const fullId = decodedIdParam.replace(".json", "");
+        if (apiKeyFromPath === Deno.env.get("ADDON_SHARED_SECRET")) {
+            const decodedIdParam = decodeURIComponent(imdbId);
 
-        const requestedInfo = type === 'series' ? parseRequestedEpisode(type, fullId) ?? ({} as Partial<EpisodeInfo>) : { imdbid: fullId };
+            const fullId = decodedIdParam.replace(".json", "");
 
-        console.log(`requestedInfo: ${JSON.stringify(requestedInfo)}`);
+            const requestedInfo = type === 'series' ? parseRequestedEpisode(type, fullId) ?? ({} as Partial<EpisodeInfo>) : { imdbid: fullId };
 
-        try {
-            const { results } = await getMediaAndSearchResults(type, requestedInfo);
+            console.log(`requestedInfo: ${JSON.stringify(requestedInfo)}`);
 
-            const getPipeline = redis.pipeline();
-            results.forEach(r => {
-                const hash = md5(r.downloadUrl);
-                const streamKey = `streams:${hash}`;
-                getPipeline.call("JSON.GET", streamKey, "$");
-            });
-            const execResult = await getPipeline.exec() as any[] | null;
-            const existingResults = execResult ?? [];
+            try {
+                const { results } = await getMediaAndSearchResults(type, requestedInfo);
 
-            const setPipeline = redis.pipeline();
-            const streams = results.map((r, idx) => {
-                const hash = md5(r.downloadUrl);
-                const streamKey = `streams:${hash}`;
-                const existingTuple = existingResults[idx];
-                const existingRaw = existingTuple && !existingTuple[0] ? existingTuple[1] : null;
+                const getPipeline = redis.pipeline();
+                results.forEach(r => {
+                    const hash = md5(r.downloadUrl);
+                    const streamKey = `streams:${hash}`;
+                    getPipeline.call("JSON.GET", streamKey, "$");
+                });
+                const execResult = await getPipeline.exec() as any[] | null;
+                const existingResults = execResult ?? [];
 
-                let name = '';
+                const setPipeline = redis.pipeline();
+                const streams = results.map((r, idx) => {
+                    const hash = md5(r.downloadUrl);
+                    const streamKey = `streams:${hash}`;
+                    const existingTuple = existingResults[idx];
+                    const existingRaw = existingTuple && !existingTuple[0] ? existingTuple[1] : null;
 
-                if (existingRaw) {
-                    try {
-                        const data = JSON.parse(existingRaw)[0];
-                        if (data?.nzoId) name = '⚡';
-                    } catch {
-                        // JSON parse failed, treat as NEW
+                    let name = '';
+
+                    if (existingRaw) {
+                        try {
+                            const data = JSON.parse(existingRaw)[0];
+                            if (data?.nzoId) name = '⚡';
+                        } catch {
+                            // JSON parse failed, treat as NEW
+                        }
+                    } else {
+                        const streamData = {
+                            downloadUrl: r.downloadUrl,
+                            title: r.title,
+                            size: r.size,
+                            fileName: r.fileName,
+                            rawImdbId: fullId,
+                        };
+
+                        setPipeline.call("JSON.SET", streamKey, "$", JSON.stringify(streamData), "NX");
+                        setPipeline.expire(streamKey, 60 * 60 * 48);
                     }
-                } else {
-                    const streamData = {
-                        downloadUrl: r.downloadUrl,
-                        title: r.title,
-                        size: r.size,
-                        fileName: r.fileName,
-                        rawImdbId: fullId,
-                    };
 
-                    setPipeline.call("JSON.SET", streamKey, "$", JSON.stringify(streamData), "NX");
-                    setPipeline.expire(streamKey, 60 * 60 * 48);
+                    return {
+                        name,
+                        title: r.title,
+                        url: `${ADDON_BASE_URL}/${Deno.env.get("ADDON_SHARED_SECRET")}/nzb/stream/${hash}`,
+                        size: r.size,
+                    };
+                });
+
+                await setPipeline.exec();
+                return jsonResponse({ streams });
+
+            } catch (err) {
+                console.error("Stream list error:", err);
+                return jsonResponse({ error: "Failed to load streams" }, 502);
+            }
+        } else {
+            return jsonResponse({ error: "Unauthorized" }, 401);
+        }
+    }
+
+    if ((method === "GET" || method === "HEAD")) {
+        const match = pathname.match(/^\/([^/]+)\/nzb\/stream\/([^/]+)$/);
+
+        if (match) {
+            // match[1] is the API Key from the path
+            const apiKeyFromPath = match[1];
+            // match[2] is the unique stream key (your 'key' variable)
+            const key = match[2];
+
+            // 1. Check the API Key
+            if (apiKeyFromPath === Deno.env.get("ADDON_SHARED_SECRET")) {
+
+                if (!key) {
+                    const failureResponse = await streamFailureVideo(req);
+                    if (failureResponse) return failureResponse;
+                    return jsonResponse({ error: "Missing key" }, 502);
                 }
 
-                return {
-                    name,
-                    title: r.title,
-                    url: `${ADDON_BASE_URL}/nzb/stream/${hash}`,
-                    size: r.size,
-                };
-            });
+                console.log(`${method} Request made for ${key}`);
+                try {
+                    return await streamNzbdavProxy(key, req);
+                } catch (err) {
+                    console.error("NZBDAV proxy error:", err);
 
-            await setPipeline.exec();
-            return jsonResponse({ streams });
+                    const failureResponse = await streamFailureVideo(req);
+                    if (failureResponse) return failureResponse;
 
-        } catch (err) {
-            console.error("Stream list error:", err);
-            return jsonResponse({ error: "Failed to load streams" }, 502);
-        }
-    }
-
-    if ((method === "GET" || method === "HEAD") && pathname.startsWith("/nzb/stream/")) {
-        const match = pathname.match(/^\/nzb\/stream\/([^/]+)$/);
-        const key = match?.[1];
-
-        if (!key) {
-            const failureResponse = await streamFailureVideo(req);
-            if (failureResponse) return failureResponse;
-            return jsonResponse({ error: "Missing key" }, 502);
-        }
-
-        console.log(`${method} Request made for ${key}`);
-        try {
-            return await streamNzbdavProxy(key, req);
-        } catch (err) {
-            console.error("NZBDAV proxy error:", err);
-
-            const failureResponse = await streamFailureVideo(req);
-            if (failureResponse) return failureResponse;
-
-            if (method === "GET") {
-                return jsonResponse({ error: "UPSTREAM ERROR" }, 502);
-            } else { // HEAD
-                return jsonResponse({ error: "Failed to stream file" }, 502);
+                    if (method === "GET") {
+                        return jsonResponse({ error: "UPSTREAM ERROR" }, 502);
+                    } else { // HEAD
+                        return jsonResponse({ error: "Failed to stream file" }, 502);
+                    }
+                }
+            } else {
+                return jsonResponse({ error: "Unauthorized" }, 401);
             }
         }
     }
 
-    // 404
-    return textResponse("Not Found", 404);
+    return jsonResponse({ error: "Not found" }, 404);
 }
 
 Deno.serve({ port: Number(PORT) }, handler);

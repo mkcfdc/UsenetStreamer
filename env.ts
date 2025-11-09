@@ -10,6 +10,8 @@ if (!PROWLARR_API_KEY || !PROWLARR_URL) throw new Error("PROWLARR VARIABLES REQU
 export const REDIS_URL = String(Deno.env.get("REDIS_URL"));
 if (!REDIS_URL) throw new Error("REDIS_URL is required!");
 
+if (!Deno.env.get("ADDON_SHARED_SECRET")) throw new Error("ADDON_SHARED_SECRET is required!");
+
 export const NZBDAV_URL = (Deno.env.get("NZBDAV_URL") || "").trim();
 export const NZBDAV_API_KEY = (Deno.env.get("NZBDAV_API_KEY") || "").trim();
 export const NZBDAV_CATEGORY_MOVIES = Deno.env.get("NZBDAV_CATEGORY_MOVIES") || "Movies";
