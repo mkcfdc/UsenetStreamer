@@ -3,6 +3,7 @@
     "dev": "deno run --allow-env --allow-net --allow-read --env-file=.env main.ts"
   },
   "imports": {
+    "@ctrl/video-filename-parser": "npm:@ctrl/video-filename-parser@^5.4.1",
     "@std/encoding": "jsr:@std/encoding@^1.0.10",
     "@std/path": "jsr:@std/path@^1.1.2",
     "@takker/md5": "jsr:@takker/md5@^0.1.0",

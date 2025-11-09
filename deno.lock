@@ -2,8 +2,10 @@
   "version": "5",
   "specifiers": {
     "jsr:@std/encoding@^1.0.10": "1.0.10",
+    "jsr:@std/internal@^1.0.10": "1.0.12",
     "jsr:@std/path@^1.1.2": "1.1.2",
     "jsr:@takker/md5@0.1": "0.1.0",
+    "npm:@ctrl/video-filename-parser@^5.4.1": "5.4.1",
     "npm:ioredis@^5.8.2": "5.8.2",
     "npm:lru-cache@^11.2.2": "11.2.2",
     "npm:webdav@^5.8.0": "5.8.0"
@@ -12,8 +14,14 @@
     "@std/encoding@1.0.10": {
       "integrity": "8783c6384a2d13abd5e9e87a7ae0520a30e9f56aeeaa3bdf910a3eaaf5c811a1"
     },
+    "@std/internal@1.0.12": {
+      "integrity": "972a634fd5bc34b242024402972cd5143eac68d8dffaca5eaa4dba30ce17b027"
+    },
     "@std/path@1.1.2": {
-      "integrity": "c0b13b97dfe06546d5e16bf3966b1cadf92e1cc83e56ba5476ad8b498d9e3038"
+      "integrity": "c0b13b97dfe06546d5e16bf3966b1cadf92e1cc83e56ba5476ad8b498d9e3038",
+      "dependencies": [
+        "jsr:@std/internal"
+      ]
     },
     "@takker/md5@0.1.0": {
       "integrity": "4c423d8247aadf7bcb1eb83c727bf28c05c21906e916517395d00aa157b6eae0"
@@ -25,6 +33,9 @@
       "optionalDependencies": [
         "node-fetch"
       ]
+    },
+    "@ctrl/video-filename-parser@5.4.1": {
+      "integrity": "sha512-NP3LM97WfaxTfsEadKpwleoXk1MPBKqsikA7/HpYo6RO0NcDYYM+01MThhTWICx+mTkJcUSs40Iifr2TG0UnuA=="
     },
     "@ioredis/commands@1.4.0": {
       "integrity": "sha512-aFT2yemJJo+TZCmieA7qnYGQooOS7QfNmYrzGtsYd3g9j5iDP8AimYYAesf79ohjbLG12XxC4nG5DyEnC88AsQ=="
@@ -214,6 +225,7 @@
       "jsr:@std/encoding@^1.0.10",
       "jsr:@std/path@^1.1.2",
       "jsr:@takker/md5@0.1",
+      "npm:@ctrl/video-filename-parser@^5.4.1",
       "npm:ioredis@^5.8.2",
       "npm:lru-cache@^11.2.2",
       "npm:webdav@^5.8.0"

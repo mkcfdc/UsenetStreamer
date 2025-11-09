@@ -10,6 +10,9 @@ import { redis } from "./utils/redis.ts";
 import { streamFailureVideo } from "./lib/streamFailureVideo.ts";
 import { jsonResponse, textResponse } from "./utils/responseUtils.ts";
 
+import { filenameParse as parseRelease } from "@ctrl/video-filename-parser";
+import { formatVideoCard } from "./utils/streamFilters.ts";
+
 async function handler(req: Request): Promise<Response> {
     const url = new URL(req.url);
     const { pathname } = url;
@@ -76,6 +79,8 @@ async function handler(req: Request): Promise<Response> {
         const imdbId = streamMatch[3];
 
         if (apiKeyFromPath === Deno.env.get("ADDON_SHARED_SECRET")) {
+
+
             const decodedIdParam = decodeURIComponent(imdbId);
 
             const fullId = decodedIdParam.replace(".json", "");
@@ -86,6 +91,7 @@ async function handler(req: Request): Promise<Response> {
 
             try {
                 const { results } = await getMediaAndSearchResults(type, requestedInfo);
+
 
                 const getPipeline = redis.pipeline();
                 results.forEach(r => {
@@ -125,9 +131,12 @@ async function handler(req: Request): Promise<Response> {
                         setPipeline.expire(streamKey, 60 * 60 * 48);
                     }
 
+                    const parsedTitle = parseRelease(r.title, type === 'series');
+                    const { resolution, lines } = formatVideoCard(parsedTitle, { size: (r.size / (1024 ** 3)).toFixed(2).replace(/\.?0+$/, ''), proxied: false, source: 'Usenet' });
+
                     return {
-                        name,
-                        title: r.title,
+                        name: name + ' ' + resolution,
+                        title: lines,
                         url: `${ADDON_BASE_URL}/${Deno.env.get("ADDON_SHARED_SECRET")}/nzb/stream/${hash}`,
                         size: r.size,
                     };
