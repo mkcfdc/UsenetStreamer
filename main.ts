@@ -92,7 +92,6 @@ async function handler(req: Request): Promise<Response> {
             try {
                 const { results } = await getMediaAndSearchResults(type, requestedInfo);
 
-
                 const getPipeline = redis.pipeline();
                 results.forEach(r => {
                     const hash = md5(r.downloadUrl);
@@ -103,6 +102,8 @@ async function handler(req: Request): Promise<Response> {
                 const existingResults = execResult ?? [];
 
                 const setPipeline = redis.pipeline();
+                const streamsByResolution: { [key: string]: any[] } = {};  // Group streams by resolution
+
                 const streams = results.map((r, idx) => {
                     const hash = md5(r.downloadUrl);
                     const streamKey = `streams:${hash}`;
@@ -134,21 +135,39 @@ async function handler(req: Request): Promise<Response> {
                     const parsedTitle = parseRelease(r.title, type === 'series');
                     const { resolution, lines } = formatVideoCard(parsedTitle, { size: (r.size / (1024 ** 3)).toFixed(2).replace(/\.?0+$/, ''), proxied: false, source: 'Usenet' });
 
-                    return {
+                    // Group the streams by resolution
+                    if (!streamsByResolution[resolution]) {
+                        streamsByResolution[resolution] = [];
+                    }
+
+                    streamsByResolution[resolution].push({
                         name: name + ' ' + resolution,
                         title: lines,
                         url: `${ADDON_BASE_URL}/${Deno.env.get("ADDON_SHARED_SECRET")}/nzb/stream/${hash}`,
                         size: r.size,
-                    };
+                    });
+
+                    return { resolution, size: r.size }; // Return resolution and size for sorting later
                 });
 
+                // Now, sort and limit the results per resolution
+                const sortedStreams: any[] = [];
+                for (const resolution in streamsByResolution) {
+                    // Sort streams by size or other criteria you prefer
+                    const sortedByResolution = streamsByResolution[resolution].sort((a, b) => b.size - a.size); // Example: sorting by size
+
+                    // Limit to 5 streams per resolution
+                    sortedStreams.push(...sortedByResolution.slice(0, 5));
+                }
+
                 await setPipeline.exec();
-                return jsonResponse({ streams });
+                return jsonResponse({ streams: sortedStreams });
 
             } catch (err) {
                 console.error("Stream list error:", err);
                 return jsonResponse({ error: "Failed to load streams" }, 502);
             }
+
         } else {
             return jsonResponse({ error: "Unauthorized" }, 401);
         }

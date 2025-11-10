@@ -26,7 +26,7 @@ interface ProwlarrResult {
 }
 
 const CINEMETA_CACHE_TTL = 86400 * 7;
-const PROWLARR_SEARCH_CACHE_TTL = 3600;
+const PROWLARR_SEARCH_CACHE_TTL = 86400; // 1 day
 
 /**
  * Fetches media metadata and search results, utilizing Redis for caching both API calls.
@@ -76,7 +76,7 @@ export async function getMediaAndSearchResults(
             name: showName,
             year: String(year),
             type,
-            limit: 10,
+            limit: 50,
             ...episode && season ? { season, episode } : {},
         });
 
