@@ -30,6 +30,11 @@ function sanitizeFileName(file: string) {
  * @param fileNameHint An optional hint for the filename.
  * @returns A Promise that resolves to the final Deno Response object.
  */
+const httpClient = Deno.createHttpClient({
+    poolIdleTimeout: 60_000,
+    poolMaxIdlePerHost: 8,
+    http2: true,
+});
 export async function proxyNzbdavStream(
     req: Request,
     viewPath: string,
@@ -79,8 +84,9 @@ export async function proxyNzbdavStream(
     const ac = new AbortController();
 
     const upstream = await fetch(targetUrl, {
-        method: upstreamMethod, // "GET"
+        method: upstreamMethod,
         headers: requestHeaders,
+        client: httpClient, // may help with performance
         signal: ac.signal,
     }).catch((e) => {
         console.error("[NZBDAV] Fetch failed:", e.message);
