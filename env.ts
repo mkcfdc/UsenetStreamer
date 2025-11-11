@@ -10,6 +10,8 @@ if (!PROWLARR_API_KEY || !PROWLARR_URL) throw new Error("PROWLARR VARIABLES REQU
 export const REDIS_URL = String(Deno.env.get("REDIS_URL"));
 if (!REDIS_URL) throw new Error("REDIS_URL is required!");
 
+if (Deno.env.get("OTEL_DENO")) console.log("[OTEL] OpenTelemetry enabled!");
+
 if (!Deno.env.get("ADDON_SHARED_SECRET")) throw new Error("ADDON_SHARED_SECRET is required!");
 
 export const NZBDAV_URL = (Deno.env.get("NZBDAV_URL") || "").trim();
