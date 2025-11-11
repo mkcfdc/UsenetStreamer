@@ -44,7 +44,7 @@ export async function findBestVideoFile({
         try {
             entries = await listWebdavDirectory(currentPath);
         } catch (e) {
-            console.error(`[NZBDAV] Failed to list ${currentPath}:`, e);
+            console.error(`[NZBDAV] Failed to list ${currentPath}; Path not found`);
             continue;
         }
 
@@ -80,7 +80,7 @@ export async function findBestVideoFile({
         }
     }
 
-    return bestEpisodeMatch || bestMatch;
+    return bestEpisodeMatch || bestMatch || null;
 }
 
 function fileMatchesEpisode(fileName: string, requestedEpisode: EpisodeInfo | undefined): boolean {

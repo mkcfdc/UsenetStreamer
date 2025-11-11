@@ -338,6 +338,22 @@ async function buildNzbdavStream({
         return cached;
     }
 
+    // check the nzbdav web dav for the file first..
+    const checkDav = await findBestVideoFile({
+        category,
+        jobName: title,
+        requestedEpisode,
+    });
+    if (checkDav) {
+        const fileName = checkDav.viewPath.split('/').pop() || title;
+        console.log(`[NZBDAV] Pre-cache hit: ${checkDav.viewPath}`);
+        // maybe update the cache here @TODO
+        return {
+            viewPath: checkDav.viewPath,
+            fileName: fileName,
+        }
+    }
+
     const proxyUrl = `${ADDON_BASE_URL}/nzb/proxy/${md5(downloadUrl)}.nzb`;
 
     // Only do full work if cache miss
