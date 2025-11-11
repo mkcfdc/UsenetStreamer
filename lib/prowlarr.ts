@@ -218,10 +218,14 @@ export async function searchProwlarr(opts: ProwlarrSearchOptions): Promise<Prowl
             return true;
         });
 
+        // Smart deduplication
         for (const item of filteredResults) {
-            const key = `${item.indexerId}|${item.indexer}|${item.title}|${item.size}`;
-            if (!resultsByKey.has(key)) {
-                resultsByKey.set(key, item);
+            const normalizedKey = normalizeTitle(item.title);
+            const existing = resultsByKey.get(normalizedKey);
+
+            // Keep only the best version (larger file or first seen)
+            if (!existing || item.size > existing.size) {
+                resultsByKey.set(normalizedKey, item);
             }
         }
     }
@@ -234,7 +238,7 @@ export async function searchProwlarr(opts: ProwlarrSearchOptions): Promise<Prowl
         const bHasGuid = !!b.guid;
         if (aHasGuid && !bHasGuid) return -1;
         if (!aHasGuid && bHasGuid) return 1;
-        return 0; // keep relative order if both have or both lack guid
+        return 0;
     });
 
     console.log(`[PROWLARR] Final aggregated unique NZB results: ${dedupedNzbResults.length}`);
@@ -258,4 +262,17 @@ function fileMatchesEpisode(fileName: string, requestedEpisode: RequestedEpisode
         new RegExp(`[eE](?:pisode|p)\.?\\s*0*${episode}(?![0-9])`, "i"),
     ];
     return patterns.some((regex) => regex.test(fileName));
+}
+
+// Helper: normalize titles to deduplicate equivalent releases
+function normalizeTitle(title: string): string {
+    return title
+        .toLowerCase()
+        // remove brackets and punctuation
+        .replace(/[\[\](){}]/g, '')
+        .replace(/[^a-z0-9]+/g, ' ')
+        // remove common tags that create near-duplicates
+        .replace(/\b(repack|proper|internal|multi|dual|hdr|dv|atmos|subs|webrip|webdl|web-dl|bluray|uhd|remux|hevc|h265|x265|x264|avc|h264|10bit|2160p|1080p|720p|480p|576p|hdr10|dolby|vision)\b/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
 }
