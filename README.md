@@ -22,6 +22,7 @@ downloads in NZBDav, and exposes the resulting media as Stremio streams.
 8. Uses Deno API's to stream direct to client.
 9. No more Express dependency. Uses Deno.serve directly. Hopefully this will
    reduce the mem usage by quiet a bit.. we will see, I'm probably wrong.
+10. As of 11-10-2025 Prowlarr no longer allows you to disable redirects for Usenet indexers. Built a small proxy to get around it since nzbdav does not play nice with redirects at the moment.
 
 ### Features missing in this version:
 
