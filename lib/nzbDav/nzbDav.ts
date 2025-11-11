@@ -10,7 +10,8 @@ import { buildNzbdavApiParams, getNzbdavCategory, sleep } from "./nzbUtils.ts";
 
 import {
     NZBDAV_POLL_TIMEOUT_MS, NZBDAV_HISTORY_TIMEOUT_MS, NZBDAV_URL, NZBDAV_API_KEY, NZBDAV_API_TIMEOUT_MS, NZBDAV_POLL_INTERVAL_MS,
-    NZBDAV_CACHE_TTL_MS, STREAM_METADATA_CACHE_TTL_MS, NZBDAV_CACHE_MAX_ITEMS, STREAM_METADATA_CACHE_MAX_ITEMS
+    NZBDAV_CACHE_TTL_MS, STREAM_METADATA_CACHE_TTL_MS, NZBDAV_CACHE_MAX_ITEMS, STREAM_METADATA_CACHE_MAX_ITEMS,
+    ADDON_BASE_URL
 } from "../../env.ts";
 import { md5 } from "../../utils/md5Encoder.ts";
 
@@ -337,8 +338,10 @@ async function buildNzbdavStream({
         return cached;
     }
 
+    const proxyUrl = `${ADDON_BASE_URL}/nzb/proxy/${md5(downloadUrl)}.nzb`;
+
     // Only do full work if cache miss
-    const { nzoId } = await addNzbToNzbdav(downloadUrl, category, title);
+    const { nzoId } = await addNzbToNzbdav(proxyUrl, category, title);
     const slot = await waitForNzbdavHistorySlot(nzoId, category);
 
     const slotCategory = slot?.category || slot?.Category || category;

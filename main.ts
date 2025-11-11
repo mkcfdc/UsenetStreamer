@@ -212,6 +212,78 @@ async function handler(req: Request): Promise<Response> {
         }
     }
 
+
+    const proxyMatch = pathname.match(/^\/nzb\/proxy\/([a-f0-9]+)\.nzb$/i);
+    if (proxyMatch && method === "GET") {
+        if (!proxyMatch) {
+            return new Response("Not Found", { status: 404 });
+        }
+
+        const hash = proxyMatch[1];
+        const redisKey = `streams:${hash}`;
+        const resolvedKey = `${redisKey}:resolved`;
+
+        try {
+            const dataRaw = await redis.call("JSON.GET", redisKey, "$");
+            if (!dataRaw) {
+                return new Response("Unknown NZB hash", { status: 404 });
+            }
+
+            let parsedData: any;
+            if (typeof dataRaw === "string") {
+                try {
+                    parsedData = JSON.parse(dataRaw);
+                } catch {
+                    parsedData = dataRaw;
+                }
+            } else {
+                parsedData = dataRaw;
+            }
+
+            const data = Array.isArray(parsedData) ? parsedData[0] : parsedData;
+            if (!data?.downloadUrl) {
+                return new Response("Invalid stream record", { status: 400 });
+            }
+
+            const downloadUrl: string = data.downloadUrl;
+            let resolvedUrl: string | null = await redis.get(resolvedKey);
+
+            if (!resolvedUrl) {
+                const resp = await fetch(downloadUrl, { redirect: "manual" });
+                if (![301, 302].includes(resp.status)) {
+                    return new Response(`Unexpected Prowlarr status: ${resp.status}`, {
+                        status: 500,
+                    });
+                }
+
+                resolvedUrl = resp.headers.get("location");
+                if (!resolvedUrl) {
+                    return new Response("Redirect missing 'Location' header", { status: 500 });
+                }
+
+                await redis.setex(resolvedKey, 21600, resolvedUrl);
+            }
+
+            const nzbResp = await fetch(resolvedUrl);
+            if (!nzbResp.ok) {
+                if (nzbResp.status === 404) {
+                    await redis.del(resolvedKey);
+                }
+                return new Response(await nzbResp.text(), { status: nzbResp.status });
+            }
+
+            const headers = new Headers(nzbResp.headers);
+            headers.set("Content-Disposition", `attachment; filename="${hash}.nzb"`);
+            headers.set("Content-Type", headers.get("content-type") ?? "application/x-nzb");
+
+            return new Response(nzbResp.body, { headers });
+
+        } catch (err) {
+            console.error("[NZB Proxy] Error:", err);
+            return new Response("Internal NZB proxy error", { status: 500 });
+        }
+    }
+
     return jsonResponse({ error: "Not found" }, 404);
 }
 
