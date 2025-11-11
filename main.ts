@@ -115,7 +115,7 @@ async function handler(req: Request): Promise<Response> {
                     if (existingRaw) {
                         try {
                             const data = JSON.parse(existingRaw)[0];
-                            if (data?.nzoId) name = '⚡';
+                            if (data?.viewPath) name = '⚡';
                         } catch {
                             // JSON parse failed, treat as NEW
                         }

@@ -344,14 +344,14 @@ async function buildNzbdavStream({
         jobName: title,
         requestedEpisode,
     });
-    if (checkDav) {
-        const fileName = checkDav.viewPath.split('/').pop() || title;
+    if (checkDav?.viewPath) {
+        const fileName = checkDav.viewPath.split('/').pop();
         console.log(`[NZBDAV] Pre-cache hit: ${checkDav.viewPath}`);
-        // maybe update the cache here @TODO
+        await setJsonValue(cacheKey, '$.viewPath', checkDav.viewPath); // this will allow our streams to come back cached on the next lookup.
         return {
             viewPath: checkDav.viewPath,
             fileName: fileName,
-        }
+        };
     }
 
     const proxyUrl = `${ADDON_BASE_URL}/nzb/proxy/${md5(downloadUrl)}.nzb`;
