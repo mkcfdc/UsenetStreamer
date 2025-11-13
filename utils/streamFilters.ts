@@ -2,8 +2,19 @@
 // https://github.com/BRNKR/UsenetStreamer
 // Used the Prism format.
 
+import { type ParsedFilename, type ParsedShow } from "@ctrl/video-filename-parser";
 
-export function formatVideoCard(parsed, options = {}) {
+interface FormatVideoCardOptions {
+  size?: string | null;        // GB
+  totalSize?: string | null;   // GB
+  proxied?: boolean;          // true / false
+  source?: string;            // e.g., 'Usenet', 'Torrent'
+  age?: number | null;        // days
+  grabs?: number | null;      // number of grabs
+  message?: string;           // additional message
+}
+
+export function formatVideoCard(parsed: ParsedFilename | ParsedShow, options: FormatVideoCardOptions = {}) {
   const {
     size = null,       // GB
     totalSize = null,  // GB
@@ -14,7 +25,13 @@ export function formatVideoCard(parsed, options = {}) {
     message = ''
   } = options;
 
-  const episodeString = parsed.isTv && parsed.fullSeason === false ? ` S${parsed.seasons[0]?.toString().padStart(2, '0')}E${parsed.episodeNumbers[0]?.toString().padStart(2, '0')}` : '';
+  const isTv = 'isTv' in parsed && parsed.isTv;
+  const isFullSeason = 'fullSeason' in parsed && parsed.fullSeason === true;
+
+  const episodeString =
+    isTv && !isFullSeason && 'seasons' in parsed && 'episodeNumbers' in parsed
+      ? ` S${parsed.seasons?.[0]?.toString().padStart(2, '0')}E${parsed.episodeNumbers?.[0]?.toString().padStart(2, '0')}`
+      : '';
 
   // Title + Year
   const titleLine = `🎬 ${parsed.title}${parsed.year ? ` (${parsed.year})` : ''} ` + episodeString;
@@ -31,15 +48,11 @@ export function formatVideoCard(parsed, options = {}) {
 
   const editionLine = editionBadges.join(' ');
 
-  // Duration (formatted only if present)
-  const duration = parsed.runtime ? formatDuration(parsed.runtime) : null;
-
   // Build video line dynamically
   const videoParts = [
     sourceType && `🎥 ${sourceType}`,
     editionLine && editionLine,
     videoCodec && `🎞️ ${videoCodec}`,
-    duration && `⏱️ ${duration}`,
   ].filter(Boolean);
 
   const videoLine = videoParts.join(' ');
@@ -84,11 +97,4 @@ export function formatVideoCard(parsed, options = {}) {
     resolution,
     lines
   };
-}
-
-function formatDuration(seconds: number): string {
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = seconds % 60;
-  return `${h}h:${m}m:${s}s`;
 }
