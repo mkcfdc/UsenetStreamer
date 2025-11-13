@@ -9,11 +9,15 @@ export function formatVideoCard(parsed, options = {}) {
     totalSize = null,  // GB
     proxied = false,   // true / false
     source = 'Usenet',
+    age = null,
+    grabs = null,
     message = ''
   } = options;
 
+  const episodeString = parsed.isTv && parsed.fullSeason === false ? ` S${parsed.seasons[0]?.toString().padStart(2, '0')}E${parsed.episodeNumbers[0]?.toString().padStart(2, '0')}` : '';
+
   // Title + Year
-  const titleLine = `🎬 ${parsed.title}${parsed.year ? ` (${parsed.year})` : ''}`;
+  const titleLine = `🎬 ${parsed.title}${parsed.year ? ` (${parsed.year})` : ''} ` + episodeString;
 
   // Source / Resolution / Codec / Duration placeholder
   const resolution = parsed.resolution || 'Unknown';
@@ -61,6 +65,8 @@ export function formatVideoCard(parsed, options = {}) {
   }
   if (parsed.group) sizeParts.push(`🏷️ ${parsed.group}`);
   // sizeParts.push(`📡 RARBG`);
+  if (age !== null) sizeParts.push(`⏳ ${age} days old`);
+  if (grabs !== null) sizeParts.push(`🤲 ${grabs} grabs`);
 
   const sizeLine = sizeParts.join(' ');
 

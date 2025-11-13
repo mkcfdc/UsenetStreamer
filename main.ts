@@ -98,7 +98,9 @@ async function handler(req: Request): Promise<Response> {
                     const { resolution, lines } = formatVideoCard(parsed, {
                         size: (r.size / (1024 ** 3)).toFixed(2).replace(/\.?0+$/, ''),
                         proxied: false,
-                        source: 'Usenet',
+                        source: r.indexer ?? 'Usenet',
+                        age: r.age,
+                        grabs: r.grabs,
                     });
 
                     grouped[resolution] ??= [];

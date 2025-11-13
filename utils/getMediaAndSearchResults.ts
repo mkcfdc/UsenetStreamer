@@ -23,6 +23,9 @@ interface ProwlarrResult {
     size: number;
     fileName?: string;
     category?: string;
+    indexer?: string;
+    age?: number;
+    grabs?: number;
 }
 
 const CINEMETA_CACHE_TTL = 86400 * 7;
