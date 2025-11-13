@@ -347,7 +347,7 @@ async function buildNzbdavStream({
     if (checkDav?.viewPath) {
         const fileName = checkDav.viewPath.split('/').pop();
         console.log(`[NZBDAV] Pre-cache hit: ${checkDav.viewPath}`);
-        await setJsonValue(cacheKey, '$.viewPath', checkDav.viewPath); // this will allow our streams to come back cached on the next lookup.
+        await setJsonValue(cacheKey, '$.viewPath', checkDav.viewPath); // 
         return {
             viewPath: checkDav.viewPath,
             fileName: fileName,

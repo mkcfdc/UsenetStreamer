@@ -92,34 +92,40 @@ async function handler(req: Request): Promise<Response> {
             try {
                 const { results } = await getMediaAndSearchResults(type, requestedInfo);
 
+                const grouped: Record<string, any[]> = {};
+                for (const r of results) {
+                    const parsed = parseRelease(r.title, type === 'series');
+                    const { resolution, lines } = formatVideoCard(parsed, {
+                        size: (r.size / (1024 ** 3)).toFixed(2).replace(/\.?0+$/, ''),
+                        proxied: false,
+                        source: 'Usenet',
+                    });
+
+                    grouped[resolution] ??= [];
+                    grouped[resolution].push({
+                        ...r,
+                        resolution,
+                        lines,
+                    });
+                }
+
+                const filtered = Object.values(grouped)
+                    .flatMap(arr => arr.sort((a, b) => b.size - a.size).slice(0, 5));
+
                 const getPipeline = redis.pipeline();
-                results.forEach(r => {
-                    const hash = md5(r.downloadUrl);
-                    const streamKey = `streams:${hash}`;
-                    getPipeline.call("JSON.GET", streamKey, "$");
-                });
-                const execResult = await getPipeline.exec() as any[] | null;
-                const existingResults = execResult ?? [];
+                filtered.forEach(r => getPipeline.call("JSON.GET", `streams:${md5(r.downloadUrl)}`, "$"));
+                const existingRaw = (await getPipeline.exec()) ?? [];
 
                 const setPipeline = redis.pipeline();
-                const streamsByResolution: { [key: string]: any[] } = {};  // Group streams by resolution
+                const streams: any[] = [];
 
-                const streams = results.map((r, idx) => {
+                filtered.forEach((r, i) => {
                     const hash = md5(r.downloadUrl);
-                    const streamKey = `streams:${hash}`;
-                    const existingTuple = existingResults[idx];
-                    const existingRaw = existingTuple && !existingTuple[0] ? existingTuple[1] : null;
+                    const key = `streams:${hash}`;
+                    const existingData = existingRaw[i]?.[1] ? JSON.parse(existingRaw[i][1])[0] : null;
 
-                    let name = '';
-
-                    if (existingRaw) {
-                        try {
-                            const data = JSON.parse(existingRaw)[0];
-                            if (data?.viewPath) name = '⚡';
-                        } catch {
-                            // JSON parse failed, treat as NEW
-                        }
-                    } else {
+                    const name = existingData?.viewPath ? '⚡' : '';
+                    if (!existingData) {
                         const streamData = {
                             downloadUrl: r.downloadUrl,
                             title: r.title,
@@ -128,40 +134,20 @@ async function handler(req: Request): Promise<Response> {
                             rawImdbId: fullId,
                         };
 
-                        setPipeline.call("JSON.SET", streamKey, "$", JSON.stringify(streamData), "NX");
-                        setPipeline.expire(streamKey, 60 * 60 * 48);
+                        setPipeline.call("JSON.SET", key, "$", JSON.stringify(streamData), "NX");
+                        setPipeline.expire(key, 60 * 60 * 48);
                     }
 
-                    const parsedTitle = parseRelease(r.title, type === 'series');
-                    const { resolution, lines } = formatVideoCard(parsedTitle, { size: (r.size / (1024 ** 3)).toFixed(2).replace(/\.?0+$/, ''), proxied: false, source: 'Usenet' });
-
-                    // Group the streams by resolution
-                    if (!streamsByResolution[resolution]) {
-                        streamsByResolution[resolution] = [];
-                    }
-
-                    streamsByResolution[resolution].push({
-                        name: name + ' ' + resolution,
-                        title: lines,
+                    streams.push({
+                        name: `${name} ${r.resolution}`,
+                        title: r.lines,
                         url: `${ADDON_BASE_URL}/${Deno.env.get("ADDON_SHARED_SECRET")}/nzb/stream/${hash}`,
                         size: r.size,
                     });
-
-                    return { resolution, size: r.size }; // Return resolution and size for sorting later
                 });
 
-                // Now, sort and limit the results per resolution
-                const sortedStreams: any[] = [];
-                for (const resolution in streamsByResolution) {
-                    // Sort streams by size or other criteria you prefer
-                    const sortedByResolution = streamsByResolution[resolution].sort((a, b) => b.size - a.size); // Example: sorting by size
-
-                    // Limit to 5 streams per resolution
-                    sortedStreams.push(...sortedByResolution.slice(0, 5));
-                }
-
                 await setPipeline.exec();
-                return jsonResponse({ streams: sortedStreams });
+                return jsonResponse({ streams });
 
             } catch (err) {
                 console.error("Stream list error:", err);
@@ -177,9 +163,7 @@ async function handler(req: Request): Promise<Response> {
         const match = pathname.match(/^\/([^/]+)\/nzb\/stream\/([^/]+)$/);
 
         if (match) {
-            // match[1] is the API Key from the path
             const apiKeyFromPath = match[1];
-            // match[2] is the unique stream key (your 'key' variable)
             const key = match[2];
 
             // 1. Check the API Key
