@@ -1,3 +1,4 @@
+// deno-lint-ignore-file no-explicit-any
 import { join } from "@std/path/posix";
 import { getMediaAndSearchResults } from "./utils/getMediaAndSearchResults.ts";
 

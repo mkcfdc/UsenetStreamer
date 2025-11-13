@@ -80,7 +80,8 @@ export async function getMediaAndSearchResults(
             year: String(year),
             type,
             limit: 50,
-            ...episode && season ? { season, episode } : {},
+            season,
+            episode,
         });
 
         // @TODO: do the filtering here so we don't save the full prowlarr results to cache....
