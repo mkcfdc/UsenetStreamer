@@ -265,7 +265,7 @@ export async function streamNzbdavProxy(
             buildNzbdavStream({ downloadUrl, category, title, requestedEpisode: episode })
         );
 
-        return await proxyNzbdavStream(req, streamData.viewPath, streamData.fileName ?? "");
+        return await proxyNzbdavStream(req, streamData.viewPath, streamData.fileName ?? "", streamData.inFileSystem);
 
     } catch (err: any) {
         const msg = err.message ?? String(err);
@@ -351,6 +351,7 @@ async function buildNzbdavStream({
         return {
             viewPath: checkDav.viewPath,
             fileName: fileName,
+            inFileSystem: true,
         };
     }
 

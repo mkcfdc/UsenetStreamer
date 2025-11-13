@@ -122,7 +122,22 @@ async function handler(req: Request): Promise<Response> {
                 filtered.forEach((r, i) => {
                     const hash = md5(r.downloadUrl);
                     const key = `streams:${hash}`;
-                    const existingData = existingRaw[i]?.[1] ? JSON.parse(existingRaw[i][1])[0] : null;
+
+                    const rawExisting = existingRaw[i]?.[1];
+                    let existingData: any = null;
+                    if (rawExisting) {
+                        if (typeof rawExisting === "string") {
+                            try {
+                                existingData = JSON.parse(rawExisting)[0];
+                            } catch {
+                                existingData = null;
+                            }
+                        } else if (Array.isArray(rawExisting)) {
+                            existingData = rawExisting[0];
+                        } else if (typeof rawExisting === "object" && rawExisting !== null) {
+                            existingData = (rawExisting as any)[0] ?? rawExisting;
+                        }
+                    }
 
                     const name = existingData?.viewPath ? '⚡' : '';
                     if (!existingData) {

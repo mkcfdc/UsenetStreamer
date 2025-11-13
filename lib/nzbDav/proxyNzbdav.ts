@@ -12,6 +12,8 @@ import {
     NZBDAV_WEBDAV_USER,
     NZBDAV_WEBDAV_PASS,
 } from "../../env.ts";
+import { streamFailureVideo } from "../streamFailureVideo.ts";
+import { getWebdavClient } from "../../utils/webdav.ts";
 
 function inferMimeType(fileName: string) {
     const ext = extname(fileName.toLowerCase());
@@ -38,7 +40,8 @@ const httpClient = Deno.createHttpClient({
 export async function proxyNzbdavStream(
     req: Request,
     viewPath: string,
-    fileNameHint = ""
+    fileNameHint = "",
+    inFileSystem: boolean = false,
 ): Promise<Response> {
     const method = req.method.toUpperCase();
 
@@ -88,15 +91,29 @@ export async function proxyNzbdavStream(
         headers: requestHeaders,
         client: httpClient, // may help with performance
         signal: ac.signal,
-    }).catch((e) => {
+    }).catch(async (e) => {
         console.error("[NZBDAV] Fetch failed:", e.message);
-        throw new Error("Upstream fetch failed");
+        if (inFileSystem) {
+            const webdav = await getWebdavClient();
+            const viewPathFolder = viewPath.substring(0, viewPath.lastIndexOf("/"));
+            const deletePath = await webdav.deleteFile(viewPathFolder, { recursive: true });
+            if (deletePath) console.log(`[NZBDAV] Deleted folder due to fetch failure: ${viewPathFolder}`);
+        }
+        return await streamFailureVideo(req, `NZBDAV Fetch Error: ${e.message}`);
     });
 
     if (!upstream || !upstream.ok) {
-        const err: any = new Error(`Upstream returned status ${upstream?.status || 502}`);
-        err.response = { status: upstream?.status || 502 };
-        throw err;
+        const statusCode = upstream?.status || 502;
+        const err: any = new Error(`Upstream returned status ${statusCode}`);
+        err.response = { status: statusCode };
+        if (inFileSystem) {
+            const webdav = await getWebdavClient();
+            const viewPathFolder = viewPath.substring(0, viewPath.lastIndexOf("/"));
+            const deletePath = await webdav.deleteFile(viewPathFolder, { recursive: true });
+            if (deletePath) console.log(`[NZBDAV] Deleted folder due to fetch failure: ${viewPathFolder}`);
+        }
+        const resp = await streamFailureVideo(req, `NZBDAV Upstream Error: ${statusCode}`);
+        return resp ?? new Response(`NZBDAV Upstream Error: ${statusCode}`, { status: statusCode });
     }
 
     // 5. Prepare Response Headers
@@ -144,7 +161,13 @@ export async function proxyNzbdavStream(
     }
 
     if (!upstream.body) {
-        return new Response(JSON.stringify({ error: "Upstream body is empty" }), { status: 502 });
+        if (inFileSystem) {
+            const webdav = await getWebdavClient();
+            const viewPathFolder = viewPath.substring(0, viewPath.lastIndexOf("/"));
+            const deletePath = await webdav.deleteFile(viewPathFolder, { recursive: true });
+            if (deletePath) console.log(`[NZBDAV] Deleted folder due to empty body: ${viewPathFolder}`);
+        }
+        return await streamFailureVideo(req, "NZBDAV Upstream Error: Empty Body") || new Response("NZBDAV Upstream Error: Empty Body", { status: 502 });
     }
 
     return new Response(upstream.body, {
