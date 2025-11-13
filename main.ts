@@ -111,8 +111,14 @@ async function handler(req: Request): Promise<Response> {
                     });
                 }
 
-                const filtered = Object.values(grouped)
-                    .flatMap(arr => arr.sort((a, b) => (a.age - b.age) || (b.size - a.size)).slice(0, 5));
+                const filteredGroups = Object.entries(grouped).map(([resolution, arr]) => {
+                    const sorted = arr.sort((a, b) => (a.age - b.age) || (b.size - a.size));
+                    return {
+                        resolution,
+                        items: sorted.slice(0, 5),
+                    };
+                });
+                const filtered = filteredGroups.flatMap(g => g.items);
 
                 const getPipeline = redis.pipeline();
                 filtered.forEach(r => getPipeline.call("JSON.GET", `streams:${md5(r.downloadUrl)}`, "$"));
