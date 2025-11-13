@@ -83,6 +83,9 @@ export async function getMediaAndSearchResults(
             ...episode && season ? { season, episode } : {},
         });
 
+        // @TODO: do the filtering here so we don't save the full prowlarr results to cache....
+
+
 
         await setJsonValue(
             searchKey,

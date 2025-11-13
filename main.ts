@@ -112,7 +112,7 @@ async function handler(req: Request): Promise<Response> {
                 }
 
                 const filtered = Object.values(grouped)
-                    .flatMap(arr => arr.sort((a, b) => b.size - a.size).slice(0, 5));
+                    .flatMap(arr => arr.sort((a, b) => (a.age - b.age) || (b.size - a.size)).slice(0, 5));
 
                 const getPipeline = redis.pipeline();
                 filtered.forEach(r => getPipeline.call("JSON.GET", `streams:${md5(r.downloadUrl)}`, "$"));
