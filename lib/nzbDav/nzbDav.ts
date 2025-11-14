@@ -352,7 +352,7 @@ async function buildNzbdavStream({
             return {
                 viewPath: url,
                 fileName: fileName,
-                inFileSystem: true,
+                inFileSystem: false,
             };
         }
     }
