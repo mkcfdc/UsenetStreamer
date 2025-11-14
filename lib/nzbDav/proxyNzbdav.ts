@@ -8,7 +8,7 @@ import { extname } from "@std/path/posix";
 
 import {
     VIDEO_MIME_MAP,
-    NZBDAV_URL,
+    NZBDAV_WEBDAV_URL,
     NZBDAV_WEBDAV_USER,
     NZBDAV_WEBDAV_PASS,
 } from "../../env.ts";
@@ -54,7 +54,7 @@ export async function proxyNzbdavStream(
 
     const cleanPath = viewPath.replace(/^\/+/, "");
     const encodedPath = cleanPath.split("/").map(encodeURIComponent).join("/");
-    const base = NZBDAV_URL.replace(/\/+$/, "");
+    const base = NZBDAV_WEBDAV_URL.replace(/\/+$/, "");
     const targetUrl = `${base}/${encodedPath}`;
 
     let fileName = fileNameHint || cleanPath.split("/").pop() || "stream";
