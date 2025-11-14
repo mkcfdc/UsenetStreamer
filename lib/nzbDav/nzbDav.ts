@@ -131,6 +131,7 @@ async function waitForNzbdavHistorySlot(nzoId: string, category: string): Promis
         }
 
         const json = await response.json();
+        console.log(json);
 
         if (!json?.status) {
             const errorMessage =
