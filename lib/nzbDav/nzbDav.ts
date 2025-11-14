@@ -334,10 +334,11 @@ async function buildNzbdavStream({
 
     // check for a strm file first
     if (USE_STRM_FILES) {
+        console.log("[STRM] Checking for STRM file...");
         const strmPath = `/strm/content/${category}/${md5(downloadUrl)}/${title}.strm`;
         const checkStrm = await Deno.stat(strmPath).catch(() => null);
         if (checkStrm && checkStrm.isFile) {
-            console.log(`[NZBDAV] Pre-cache hit (STRM): ${strmPath}`);
+            console.log(`[STRM] Pre-cache hit (STRM): ${strmPath}`);
             const url = Deno.readTextFileSync(strmPath).trim();
             if (!url) {
                 console.warn(`[NZBDAV] Empty STRM file for "${title}"`);
@@ -354,6 +355,8 @@ async function buildNzbdavStream({
                 fileName: fileName,
                 inFileSystem: false,
             };
+        } else {
+            console.log(`[STRM CHECK] No STRM file found for "${title}". Moving to redis check....`);
         }
     }
 
