@@ -131,11 +131,12 @@ async function waitForNzbdavHistorySlot(nzoId: string, category: string): Promis
         }
 
         const json = await response.json();
-        console.log(json);
+        const hasSabHistory = json?.history || json?.History;
 
-        if (!json?.status || !(json?.history || json?.History)) {
-            const errorMessage =
-                json?.error || `history returned status ${response.status} (no status property)`;
+        // AltMount: no status property, but history object exists
+        if (!hasSabHistory) {
+            const errorMessage = json?.error ||
+                `history returned status ${response.status} (missing history property)`;
             throw new Error(`[NZBDAV] Failed to query history: ${errorMessage}`);
         }
 
