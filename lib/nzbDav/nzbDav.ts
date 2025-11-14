@@ -11,7 +11,7 @@ import { buildNzbdavApiParams, getNzbdavCategory, sleep } from "./nzbUtils.ts";
 import {
     NZBDAV_POLL_TIMEOUT_MS, NZBDAV_HISTORY_TIMEOUT_MS, NZBDAV_URL, NZBDAV_API_KEY, NZBDAV_API_TIMEOUT_MS, NZBDAV_POLL_INTERVAL_MS,
     NZBDAV_CACHE_TTL_MS, STREAM_METADATA_CACHE_TTL_MS, NZBDAV_CACHE_MAX_ITEMS, STREAM_METADATA_CACHE_MAX_ITEMS,
-    ADDON_BASE_URL
+    ADDON_BASE_URL, USE_STRM_FILES
 } from "../../env.ts";
 import { md5 } from "../../utils/md5Encoder.ts";
 
@@ -338,6 +338,31 @@ async function buildNzbdavStream({
     if (cached?.viewPath) {
         console.log(`[NZBDAV] Instant cache hit: ${cached.viewPath}`);
         return cached;
+    }
+
+    // check for a strm file first
+    if (USE_STRM_FILES) {
+        const strmPath = `/strm/content/${category}/${md5(downloadUrl)}/${title}.strm`;
+        const checkStrm = await Deno.stat(strmPath).catch(() => null);
+        if (checkStrm && checkStrm.isFile) {
+            console.log(`[NZBDAV] Pre-cache hit (STRM): ${strmPath}`);
+            const url = Deno.readTextFileSync(strmPath).trim();
+            if (!url) {
+                console.warn(`[NZBDAV] Empty STRM file for "${title}"`);
+            }
+
+            const urlObj = new URL(url);
+            const pathParam = urlObj.searchParams.get("path") || "";
+            const fileName = pathParam.split("/").pop() || `${title}.strm`;
+
+            await setJsonValue(cacheKey, '$.viewPath', url);
+            // @TODO: look at deleting the strm file after we cache the location.
+            return {
+                viewPath: url,
+                fileName: fileName,
+                inFileSystem: true,
+            };
+        }
     }
 
     // check the nzbdav web dav for the file first..

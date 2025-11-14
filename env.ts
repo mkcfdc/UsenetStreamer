@@ -65,3 +65,5 @@ export const STREAM_METADATA_CACHE_TTL_MS = 60000; // 1 minute
 
 export const NZBDAV_CACHE_MAX_ITEMS = 100;
 export const STREAM_METADATA_CACHE_MAX_ITEMS = 500;
+
+export const USE_STRM_FILES = Deno.env.get("USE_STRM_FILES") === "true";

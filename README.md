@@ -28,6 +28,9 @@ downloads in NZBDav, and exposes the resulting media as Stremio streams.
     play nice with redirects at the moment.
 11. Added support for altMount. It supports multiple Usenet providers & 7zip
     extraction (sometimes).
+12. Added .strm support. This might be removed in the future. .strm files are
+    just added metadata stored on the actual system. But using .strm will make
+    use of altMount's streaming functionality, testing continues.
 
 ### altMount configuration:
 
@@ -36,12 +39,23 @@ must be set to: `http://altmount:8080/webdav` Don't forget to setup your
 categories under /config/sabnzbd. Categories: Movies, Tv; Subdirectory Movies,
 Tv !!! Complete directory must be `/content`
 
+### .strm Support
+
+- To enable the use of .strm files, you must enable it by adding
+  `USE_STRM_FILES=true` to your .env
+- Under Configuration > Import Processing in altMount, set your import stratagy
+  to `STRM Files`
+- STRM Directory must be /strm
+
+This is very new and experimental, it might be broken, and it might not even be
+worth it.
+
 ### Features missing in this version:
 
 1. Only works with Prowlarr so far since that's what I've always used and that's
    how @Sanket9225 originally released.
-2. My result filtering sucks compared to @Sanket9225.. need to spend more time
-   there.
+2. No nzb Triage done to files. This increases hits to indexer api's by a ton.
+   Just have to deal with the fails.
 
 ### Running stats
 
