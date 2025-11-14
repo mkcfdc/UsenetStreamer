@@ -57,7 +57,7 @@ export async function findBestVideoFile({
                     const urlObj = new URL(url);
                     const pathParam = urlObj.searchParams.get("path") || "";
                     const fileName = pathParam.split("/").pop() || entry.name;
-                    const stripSabdb = NZBDAV_URL.replace("/sabdb", "");
+                    const stripSabdb = NZBDAV_URL.replace("/sabnzbd", "");
 
                     return {
                         viewPath: url.replace("http://localhost:8080", stripSabdb),
