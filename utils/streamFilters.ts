@@ -77,6 +77,7 @@ export function formatVideoCard(parsed: ParsedFilename | ParsedShow, options: Fo
     sizeParts.push(`📦 ${totalSize} GB`);
   }
   if (parsed.group) sizeParts.push(`🏷️ ${parsed.group}`);
+  if (source) sizeParts.push(`🔍 ${source}`);
   // sizeParts.push(`📡 RARBG`);
 
   const sizeLine = sizeParts.join(' ');
@@ -89,7 +90,6 @@ export function formatVideoCard(parsed: ParsedFilename | ParsedShow, options: Fo
   // Proxy / source info
   const proxyParts = [
     `🔓 ${proxied ? 'Proxied' : 'Not Proxied'}`,
-    source && `🔍 ${source}`,
   ].filter(Boolean);
 
   const _proxyLine = proxyParts.join(' ');
