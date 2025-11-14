@@ -357,6 +357,23 @@ async function buildNzbdavStream({
         };
     }
 
+    // check for the md5, this is done for altmount compatibility
+    const checkAltMountDav = await findBestVideoFile({
+        category,
+        jobName: md5(downloadUrl),
+        requestedEpisode,
+    });
+    if (checkAltMountDav?.viewPath) {
+        const fileName = checkAltMountDav.viewPath.split('/').pop();
+        console.log(`[NZBDAV] Pre-cache hit (AltMount): ${checkAltMountDav.viewPath}`);
+        await setJsonValue(cacheKey, '$.viewPath', checkAltMountDav.viewPath); // 
+        return {
+            viewPath: checkAltMountDav.viewPath,
+            fileName: fileName,
+            inFileSystem: true,
+        };
+    }
+
     const proxyUrl = `${ADDON_BASE_URL}/nzb/proxy/${md5(downloadUrl)}.nzb`;
 
     // Only do full work if cache miss
