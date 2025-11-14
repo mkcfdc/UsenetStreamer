@@ -331,14 +331,6 @@ async function buildNzbdavStream({
     title: string;
     requestedEpisode: EpisodeInfo | undefined;
 }) {
-    const cacheKey = `streams:${md5(downloadUrl)}`;
-    const cachedArray = await getJsonValue<any>(cacheKey, '$');
-    const cached = cachedArray ?? null;
-
-    if (cached?.viewPath) {
-        console.log(`[NZBDAV] Instant cache hit: ${cached.viewPath}`);
-        return cached;
-    }
 
     // check for a strm file first
     if (USE_STRM_FILES) {
@@ -355,7 +347,7 @@ async function buildNzbdavStream({
             const pathParam = urlObj.searchParams.get("path") || "";
             const fileName = pathParam.split("/").pop() || `${title}.strm`;
 
-            await setJsonValue(cacheKey, '$.viewPath', url);
+            //await setJsonValue(cacheKey, '$.viewPath', url);
             // @TODO: look at deleting the strm file after we cache the location.
             return {
                 viewPath: url,
@@ -363,6 +355,15 @@ async function buildNzbdavStream({
                 inFileSystem: true,
             };
         }
+    }
+
+    const cacheKey = `streams:${md5(downloadUrl)}`;
+    const cachedArray = await getJsonValue<any>(cacheKey, '$');
+    const cached = cachedArray ?? null;
+
+    if (cached?.viewPath) {
+        console.log(`[NZBDAV] Instant cache hit: ${cached.viewPath}`);
+        return cached;
     }
 
     // check the nzbdav web dav for the file first..
