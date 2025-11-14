@@ -1,5 +1,5 @@
 import { normalizeNzbdavPath, listWebdavDirectory, type WebdavEntry } from "./webdav.ts";
-import { NZBDAV_MAX_DIRECTORY_DEPTH, NZBDAV_VIDEO_EXTENSIONS, USE_STRM_FILES } from "../env.ts";
+import { NZBDAV_MAX_DIRECTORY_DEPTH, NZBDAV_URL, NZBDAV_VIDEO_EXTENSIONS, USE_STRM_FILES } from "../env.ts";
 import { extname } from "@std/path/posix";
 
 
@@ -57,9 +57,10 @@ export async function findBestVideoFile({
                     const urlObj = new URL(url);
                     const pathParam = urlObj.searchParams.get("path") || "";
                     const fileName = pathParam.split("/").pop() || entry.name;
+                    const stripSabdb = NZBDAV_URL.replace("/sabdb", "");
 
                     return {
-                        viewPath: url,
+                        viewPath: url.replace("http://localhost:8080", stripSabdb),
                         absolutePath: pathParam,
                         name: fileName,
                         size: statInfo.size, // size of directory, not file — you may want file size instead
