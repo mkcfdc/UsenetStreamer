@@ -11,6 +11,7 @@ import {
     NZBDAV_WEBDAV_URL,
     NZBDAV_WEBDAV_USER,
     NZBDAV_WEBDAV_PASS,
+    USE_STRM_FILES,
 } from "../../env.ts";
 import { streamFailureVideo } from "../streamFailureVideo.ts";
 import { getWebdavClient } from "../../utils/webdav.ts";
@@ -52,12 +53,18 @@ export async function proxyNzbdavStream(
     const emulateHead = method === "HEAD";
     const upstreamMethod = "GET";
 
+    let targetUrl;
+
     const cleanPath = viewPath.replace(/^\/+/, "");
     const encodedPath = cleanPath.split("/").map(encodeURIComponent).join("/");
     const base = NZBDAV_WEBDAV_URL.replace(/\/+$/, "");
-    const targetUrl = `${base}/${encodedPath}`;
+    if (!USE_STRM_FILES) {
+        targetUrl = `${base}/${encodedPath}`;
+    } else {
+        targetUrl = viewPath;
+    }
 
-    let fileName = fileNameHint || cleanPath.split("/").pop() || "stream";
+    let fileName = fileNameHint || targetUrl.split("/").pop() || "stream";
     fileName = sanitizeFileName(decodeURIComponent(fileName));
 
     // 2. Prepare Upstream Headers
@@ -79,7 +86,7 @@ export async function proxyNzbdavStream(
     }
 
     // Add Basic Auth
-    if (NZBDAV_WEBDAV_USER && NZBDAV_WEBDAV_PASS) {
+    if (NZBDAV_WEBDAV_USER && NZBDAV_WEBDAV_PASS && !USE_STRM_FILES) {
         const token = btoa(`${NZBDAV_WEBDAV_USER}:${NZBDAV_WEBDAV_PASS}`);
         requestHeaders.set("Authorization", `Basic ${token}`);
     }
