@@ -332,34 +332,6 @@ async function buildNzbdavStream({
     requestedEpisode: EpisodeInfo | undefined;
 }) {
 
-    // // check for a strm file first
-    // if (USE_STRM_FILES) {
-    //     console.log("[STRM] Checking for STRM file...");
-    //     const strmPath = `/strm/content/${category}/${md5(downloadUrl)}/${title}.strm`;
-    //     const checkStrm = await Deno.stat(strmPath).catch(() => null);
-    //     if (checkStrm && checkStrm.isFile) {
-    //         console.log(`[STRM] Pre-cache hit (STRM): ${strmPath}`);
-    //         const url = Deno.readTextFileSync(strmPath).trim();
-    //         if (!url) {
-    //             console.warn(`[NZBDAV] Empty STRM file for "${title}"`);
-    //         }
-
-    //         const urlObj = new URL(url);
-    //         const pathParam = urlObj.searchParams.get("path") || "";
-    //         const fileName = pathParam.split("/").pop() || `${title}.strm`;
-
-    //         //await setJsonValue(cacheKey, '$.viewPath', url);
-    //         // @TODO: look at deleting the strm file after we cache the location.
-    //         return {
-    //             viewPath: url,
-    //             fileName: fileName,
-    //             inFileSystem: false,
-    //         };
-    //     } else {
-    //         console.log(`[STRM CHECK] No STRM file found for "${title}". Moving to redis check....`);
-    //     }
-    // }
-
     const cacheKey = `streams:${md5(downloadUrl)}`;
     const cachedArray = await getJsonValue<any>(cacheKey, '$');
     const cached = cachedArray ?? null;
@@ -369,37 +341,26 @@ async function buildNzbdavStream({
         return cached;
     }
 
-    // check the nzbdav web dav for the file first..
-    const checkDav = await findBestVideoFile({
-        category,
-        jobName: title,
-        requestedEpisode,
-    });
-    if (checkDav?.viewPath) {
-        const fileName = checkDav.viewPath.split('/').pop();
-        console.log(`[NZBDAV] Pre-cache hit: ${checkDav.viewPath}`);
-        await setJsonValue(cacheKey, '$.viewPath', checkDav.viewPath); // 
-        return {
-            viewPath: checkDav.viewPath,
-            fileName: fileName,
-            inFileSystem: true,
-        };
-    }
 
-    // check for the md5, this is done for altmount compatibility
     const checkAltMountDav = await findBestVideoFile({
         category,
-        jobName: md5(downloadUrl),
+        jobName: NZBDAV_URL.includes("altmount") ? md5(downloadUrl) : title,
         requestedEpisode,
     });
     if (checkAltMountDav?.viewPath) {
         const fileName = checkAltMountDav.viewPath.split('/').pop();
-        console.log(`[NZBDAV] Pre-cache hit (AltMount): ${checkAltMountDav.viewPath}`);
+        const typeOfviewPath =
+            USE_STRM_FILES
+                ? "STRM"
+                : NZBDAV_URL.includes("altmount")
+                    ? "AltMount"
+                    : "NZBDAV";
+        console.log(`[${typeOfviewPath}] Pre-cache hit: ${checkAltMountDav.viewPath}`);
         await setJsonValue(cacheKey, '$.viewPath', checkAltMountDav.viewPath); // 
         return {
             viewPath: checkAltMountDav.viewPath,
             fileName: fileName,
-            inFileSystem: true,
+            inFileSystem: USE_STRM_FILES ? false : true,
         };
     }
 

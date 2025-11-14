@@ -38,7 +38,7 @@ export async function findBestVideoFile({
 
         // Directory does not exist → skip
         if (!statInfo || !statInfo.isDirectory) {
-            console.log(`[STRM CHECK] No STRM dir found for "${jobName}". Moving to redis check...`);
+            console.log(`[STRM CHECK] No STRM dir found for "${jobName}". Moving to webdav...`);
         } else {
             // Directory exists → search for *.strm
             for await (const entry of Deno.readDir(strmDir)) {
@@ -51,8 +51,11 @@ export async function findBestVideoFile({
 
                     if (!url) {
                         console.warn(`[STRM] Empty STRM file: ${entry.name}`);
-                        break; // continue to fallback logic
+                        break;
                     }
+                    // delete the file to keep the file system clean
+                    //const _deleteFile = Deno.removeSync(strmFilePath);
+                    //console.log(`[STRM] Deleted STRM file: ${strmFilePath}`);
 
                     const urlObj = new URL(url);
                     const pathParam = urlObj.searchParams.get("path") || "";
@@ -63,7 +66,7 @@ export async function findBestVideoFile({
                         viewPath: url.replace("http://localhost:8080", stripSabdb),
                         absolutePath: pathParam,
                         name: fileName,
-                        size: statInfo.size, // size of directory, not file — you may want file size instead
+                        size: statInfo.size,
                         matchesEpisode: true,
                     };
                 }
