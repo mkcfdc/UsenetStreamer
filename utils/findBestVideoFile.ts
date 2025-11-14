@@ -27,36 +27,48 @@ export async function findBestVideoFile({
     category,
     jobName,
     requestedEpisode,
-    title,
 }: FindFileParams): Promise<FileCandidate | null> {
 
     // check for a strm file first
     if (USE_STRM_FILES) {
         console.log("[STRM] Checking for STRM file...");
-        const strmPath = `/strm/content/${category}/${jobName}/${title}.strm`;
-        const checkStrm = await Deno.stat(strmPath).catch(() => null);
-        if (checkStrm && checkStrm.isFile) {
-            console.log(`[STRM] Pre-cache hit (STRM): ${strmPath}`);
-            const url = Deno.readTextFileSync(strmPath).trim();
-            if (!url) {
-                console.warn(`[NZBDAV] Empty STRM file for "${title}"`);
+
+        const strmDir = `/strm/content/${category}/${jobName}/`;
+        const statInfo = await Deno.stat(strmDir).catch(() => null);
+
+        // Directory does not exist → skip
+        if (!statInfo || !statInfo.isDirectory) {
+            console.log(`[STRM CHECK] No STRM dir found for "${jobName}". Moving to redis check...`);
+        } else {
+            // Directory exists → search for *.strm
+            for await (const entry of Deno.readDir(strmDir)) {
+                if (entry.isFile && entry.name.toLowerCase().endsWith(".strm")) {
+
+                    const strmFilePath = `${strmDir}${entry.name}`;
+                    console.log(`[STRM] Found STRM file: ${strmFilePath}`);
+
+                    const url = Deno.readTextFileSync(strmFilePath).trim();
+
+                    if (!url) {
+                        console.warn(`[STRM] Empty STRM file: ${entry.name}`);
+                        break; // continue to fallback logic
+                    }
+
+                    const urlObj = new URL(url);
+                    const pathParam = urlObj.searchParams.get("path") || "";
+                    const fileName = pathParam.split("/").pop() || entry.name;
+
+                    return {
+                        viewPath: url,
+                        absolutePath: pathParam,
+                        name: fileName,
+                        size: statInfo.size, // size of directory, not file — you may want file size instead
+                        matchesEpisode: true,
+                    };
+                }
             }
 
-            const urlObj = new URL(url);
-            const pathParam = urlObj.searchParams.get("path") || "";
-            const fileName = pathParam.split("/").pop() || `${title}.strm`;
-
-            //await setJsonValue(cacheKey, '$.viewPath', url);
-            // @TODO: look at deleting the strm file after we cache the location.
-            return {
-                viewPath: url,
-                absolutePath: pathParam,
-                name: fileName,
-                size: checkStrm.size,
-                matchesEpisode: true,
-            };
-        } else {
-            console.log(`[STRM CHECK] No STRM file found for "${title}". Moving to redis check....`);
+            console.log(`[STRM] No *.strm files found inside: ${strmDir}`);
         }
     }
 

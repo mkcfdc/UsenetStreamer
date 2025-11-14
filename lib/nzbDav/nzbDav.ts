@@ -280,7 +280,7 @@ export async function streamNzbdavProxy(
             await redis.del(redisKey);
 
             if (prowlarrId && downloadUrl) {
-                const searchKey = `prowlarr:search:${prowlarrId}`;
+                const searchKey = `prowlarr:search:${id}`;
                 const script = `
         local key = KEYS[1]
         local url = ARGV[1]
@@ -374,7 +374,6 @@ async function buildNzbdavStream({
         category,
         jobName: title,
         requestedEpisode,
-        title,
     });
     if (checkDav?.viewPath) {
         const fileName = checkDav.viewPath.split('/').pop();
