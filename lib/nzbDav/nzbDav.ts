@@ -332,33 +332,33 @@ async function buildNzbdavStream({
     requestedEpisode: EpisodeInfo | undefined;
 }) {
 
-    // check for a strm file first
-    if (USE_STRM_FILES) {
-        console.log("[STRM] Checking for STRM file...");
-        const strmPath = `/strm/content/${category}/${md5(downloadUrl)}/${title}.strm`;
-        const checkStrm = await Deno.stat(strmPath).catch(() => null);
-        if (checkStrm && checkStrm.isFile) {
-            console.log(`[STRM] Pre-cache hit (STRM): ${strmPath}`);
-            const url = Deno.readTextFileSync(strmPath).trim();
-            if (!url) {
-                console.warn(`[NZBDAV] Empty STRM file for "${title}"`);
-            }
+    // // check for a strm file first
+    // if (USE_STRM_FILES) {
+    //     console.log("[STRM] Checking for STRM file...");
+    //     const strmPath = `/strm/content/${category}/${md5(downloadUrl)}/${title}.strm`;
+    //     const checkStrm = await Deno.stat(strmPath).catch(() => null);
+    //     if (checkStrm && checkStrm.isFile) {
+    //         console.log(`[STRM] Pre-cache hit (STRM): ${strmPath}`);
+    //         const url = Deno.readTextFileSync(strmPath).trim();
+    //         if (!url) {
+    //             console.warn(`[NZBDAV] Empty STRM file for "${title}"`);
+    //         }
 
-            const urlObj = new URL(url);
-            const pathParam = urlObj.searchParams.get("path") || "";
-            const fileName = pathParam.split("/").pop() || `${title}.strm`;
+    //         const urlObj = new URL(url);
+    //         const pathParam = urlObj.searchParams.get("path") || "";
+    //         const fileName = pathParam.split("/").pop() || `${title}.strm`;
 
-            //await setJsonValue(cacheKey, '$.viewPath', url);
-            // @TODO: look at deleting the strm file after we cache the location.
-            return {
-                viewPath: url,
-                fileName: fileName,
-                inFileSystem: false,
-            };
-        } else {
-            console.log(`[STRM CHECK] No STRM file found for "${title}". Moving to redis check....`);
-        }
-    }
+    //         //await setJsonValue(cacheKey, '$.viewPath', url);
+    //         // @TODO: look at deleting the strm file after we cache the location.
+    //         return {
+    //             viewPath: url,
+    //             fileName: fileName,
+    //             inFileSystem: false,
+    //         };
+    //     } else {
+    //         console.log(`[STRM CHECK] No STRM file found for "${title}". Moving to redis check....`);
+    //     }
+    // }
 
     const cacheKey = `streams:${md5(downloadUrl)}`;
     const cachedArray = await getJsonValue<any>(cacheKey, '$');
@@ -374,6 +374,7 @@ async function buildNzbdavStream({
         category,
         jobName: title,
         requestedEpisode,
+        title,
     });
     if (checkDav?.viewPath) {
         const fileName = checkDav.viewPath.split('/').pop();

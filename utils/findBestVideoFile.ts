@@ -1,5 +1,5 @@
 import { normalizeNzbdavPath, listWebdavDirectory, type WebdavEntry } from "./webdav.ts";
-import { NZBDAV_MAX_DIRECTORY_DEPTH, NZBDAV_VIDEO_EXTENSIONS } from "../env.ts";
+import { NZBDAV_MAX_DIRECTORY_DEPTH, NZBDAV_VIDEO_EXTENSIONS, USE_STRM_FILES } from "../env.ts";
 import { extname } from "@std/path/posix";
 
 
@@ -15,6 +15,7 @@ interface FindFileParams {
     category: string;
     jobName: string;
     requestedEpisode: EpisodeInfo | undefined;
+    title?: string;
 }
 
 interface EpisodeInfo {
@@ -26,7 +27,41 @@ export async function findBestVideoFile({
     category,
     jobName,
     requestedEpisode,
+    title,
 }: FindFileParams): Promise<FileCandidate | null> {
+
+    // check for a strm file first
+    if (USE_STRM_FILES) {
+        console.log("[STRM] Checking for STRM file...");
+        const strmPath = `/strm/content/${category}/${jobName}/${title}.strm`;
+        const checkStrm = await Deno.stat(strmPath).catch(() => null);
+        if (checkStrm && checkStrm.isFile) {
+            console.log(`[STRM] Pre-cache hit (STRM): ${strmPath}`);
+            const url = Deno.readTextFileSync(strmPath).trim();
+            if (!url) {
+                console.warn(`[NZBDAV] Empty STRM file for "${title}"`);
+            }
+
+            const urlObj = new URL(url);
+            const pathParam = urlObj.searchParams.get("path") || "";
+            const fileName = pathParam.split("/").pop() || `${title}.strm`;
+
+            //await setJsonValue(cacheKey, '$.viewPath', url);
+            // @TODO: look at deleting the strm file after we cache the location.
+            return {
+                viewPath: url,
+                absolutePath: pathParam,
+                name: fileName,
+                size: checkStrm.size,
+                matchesEpisode: true,
+            };
+        } else {
+            console.log(`[STRM CHECK] No STRM file found for "${title}". Moving to redis check....`);
+        }
+    }
+
+
+
     const rootPath = normalizeNzbdavPath(`/content/${category}/${jobName}`);
 
     const queue = [{ path: rootPath, depth: 0 }];
