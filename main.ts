@@ -170,6 +170,7 @@ async function handler(req: Request): Promise<Response> {
                             downloadUrl: r.downloadUrl,
                             title: r.title,
                             size: r.size,
+                            type: type,
                             fileName: r.fileName,
                             rawImdbId: decoded,
                         }),
