@@ -5,7 +5,7 @@ import { getMediaAndSearchResults } from "./utils/getMediaAndSearchResults.ts";
 import { ADDON_BASE_URL, PORT, } from "./env.ts";
 import { md5 } from "./utils/md5Encoder.ts";
 import { streamNzbdavProxy } from "./lib/nzbDav/nzbDav.ts";
-import { parseRequestedEpisode, type EpisodeInfo } from "./utils/parseRequestedEpisode.ts";
+import { parseRequestedEpisode } from "./utils/parseRequestedEpisode.ts";
 import { redis } from "./utils/redis.ts";
 
 import { streamFailureVideo } from "./lib/streamFailureVideo.ts";
@@ -13,6 +13,13 @@ import { jsonResponse, textResponse } from "./utils/responseUtils.ts";
 
 import { filenameParse as parseRelease } from "@ctrl/video-filename-parser";
 import { formatVideoCard } from "./utils/streamFilters.ts";
+
+interface Stream {
+    name: string;
+    title: string;
+    url: string;
+    size: number;
+}
 
 async function handler(req: Request): Promise<Response> {
     const url = new URL(req.url);
@@ -73,113 +80,118 @@ async function handler(req: Request): Promise<Response> {
         }
     }
 
-    const streamMatch = pathname.match(new RegExp(`^/([^/]+)/stream/(movie|series)/(.+)$`));
+    const streamMatch = pathname.match(/^\/([^/]+)\/stream\/(movie|series)\/(.+)$/);
     if (streamMatch && method === "GET") {
-        const apiKeyFromPath = streamMatch[1];
-        const type = streamMatch[2] as "movie" | "series";
-        const imdbId = streamMatch[3];
+        const [_, apiKeyFromPath, type, imdbParam] = streamMatch;
+        if (type !== "movie" && type !== "series") {
+            return jsonResponse({ error: "Invalid media type" }, 400);
+        }
 
-        if (apiKeyFromPath === Deno.env.get("ADDON_SHARED_SECRET")) {
+        if (apiKeyFromPath !== Deno.env.get("ADDON_SHARED_SECRET")) {
+            return jsonResponse({ error: "Unauthorized" }, 401);
+        }
 
+        try {
+            const decoded = decodeURIComponent(imdbParam).replace(".json", "");
+            const requestedInfo =
+                type === "series"
+                    ? parseRequestedEpisode(type, decoded) ?? {}
+                    : { imdbid: decoded };
 
-            const decodedIdParam = decodeURIComponent(imdbId);
+            console.log("requestedInfo:", requestedInfo);
 
-            const fullId = decodedIdParam.replace(".json", "");
+            const { results } = await getMediaAndSearchResults(type, requestedInfo);
 
-            const requestedInfo = type === 'series' ? parseRequestedEpisode(type, fullId) ?? ({} as Partial<EpisodeInfo>) : { imdbid: fullId };
-
-            console.log(`requestedInfo: ${JSON.stringify(requestedInfo)}`);
-
-            try {
-                const { results } = await getMediaAndSearchResults(type, requestedInfo);
-
-                const grouped: Record<string, any[]> = {};
-                for (const r of results) {
-                    const parsed = parseRelease(r.title, type === 'series');
-                    const { resolution, lines } = formatVideoCard(parsed, {
-                        size: (r.size / (1024 ** 3)).toFixed(2).replace(/\.?0+$/, ''),
-                        proxied: false,
-                        source: r.indexer ?? 'Usenet',
-                        age: r.age,
-                        grabs: r.grabs,
-                    });
-
-                    grouped[resolution] ??= [];
-                    grouped[resolution].push({
-                        ...r,
-                        resolution,
-                        lines,
-                    });
-                }
-
-                const filteredGroups = Object.entries(grouped).map(([resolution, arr]) => {
-                    const sorted = arr.sort((a, b) => (a.age - b.age) || (b.size - a.size));
-                    return {
-                        resolution,
-                        items: sorted.slice(0, 5),
-                    };
+            const processed = results.map(r => {
+                const parsed = parseRelease(r.title, type === "series" ? true : false);
+                const { resolution, lines } = formatVideoCard(parsed, {
+                    size: (r.size / (1024 ** 3)).toFixed(2).replace(/\.?0+$/, ""),
+                    proxied: false,
+                    source: r.indexer ?? "Usenet",
+                    age: r.age,
+                    grabs: r.grabs,
                 });
-                const filtered = filteredGroups.flatMap(g => g.items);
 
-                const getPipeline = redis.pipeline();
-                filtered.forEach(r => getPipeline.call("JSON.GET", `streams:${md5(r.downloadUrl)}`, "$"));
-                const existingRaw = (await getPipeline.exec()) ?? [];
+                return {
+                    ...r,
+                    resolution,
+                    lines,
+                };
+            });
 
-                const setPipeline = redis.pipeline();
-                const streams: any[] = [];
+            const grouped: Record<string, any[]> = {};
+            for (const r of processed) {
+                (grouped[r.resolution] ??= []).push(r);
+            }
 
-                filtered.forEach((r, i) => {
-                    const hash = md5(r.downloadUrl);
-                    const key = `streams:${hash}`;
+            const filtered = Object.values(grouped)
+                .map(arr =>
+                    arr.sort((a, b) => (a.age - b.age) || (b.size - a.size)).slice(0, 5)
+                )
+                .flat();
 
-                    const rawExisting = existingRaw[i]?.[1];
-                    let existingData: any = null;
-                    if (rawExisting) {
-                        if (typeof rawExisting === "string") {
-                            try {
-                                existingData = JSON.parse(rawExisting)[0];
-                            } catch {
-                                existingData = null;
-                            }
-                        } else if (Array.isArray(rawExisting)) {
-                            existingData = rawExisting[0];
-                        } else if (typeof rawExisting === "object" && rawExisting !== null) {
-                            existingData = (rawExisting as any)[0] ?? rawExisting;
-                        }
-                    }
+            filtered.sort((a, b) =>
+                getResolutionRank(b.resolution) - getResolutionRank(a.resolution)
+            );
 
-                    const name = existingData?.viewPath ? '⚡' : '';
-                    if (!existingData) {
-                        const streamData = {
+            const getPipeline = redis.pipeline();
+            for (const r of filtered) {
+                getPipeline.call("JSON.GET", `streams:${md5(r.downloadUrl)}`, "$");
+            }
+            const existingRaw = await getPipeline.exec();
+            const setPipeline = redis.pipeline();
+
+            const streams: Stream[] = [];
+
+            filtered.forEach((r, i) => {
+                const hash = md5(r.downloadUrl);
+                const key = `streams:${hash}`;
+
+                // normalize redis JSON value
+                const existingVal: any = existingRaw?.[i]?.[1];
+                const parsedExisting =
+                    typeof existingVal === "string"
+                        ? JSON.parse(existingVal)?.[0]
+                        : Array.isArray(existingVal)
+                            ? existingVal[0]
+                            : typeof existingVal === "object" && existingVal !== null
+                                ? (existingVal as any)[0] ?? existingVal
+                                : null;
+
+                const prefix = parsedExisting?.viewPath ? "⚡" : "";
+
+                // Write cache only if missing
+                if (!parsedExisting) {
+                    setPipeline.call(
+                        "JSON.SET",
+                        key,
+                        "$",
+                        JSON.stringify({
                             downloadUrl: r.downloadUrl,
                             title: r.title,
                             size: r.size,
                             fileName: r.fileName,
-                            rawImdbId: fullId,
-                        };
+                            rawImdbId: decoded,
+                        }),
+                        "NX",
+                    );
+                    setPipeline.expire(key, 60 * 60 * 48);
+                }
 
-                        setPipeline.call("JSON.SET", key, "$", JSON.stringify(streamData), "NX");
-                        setPipeline.expire(key, 60 * 60 * 48);
-                    }
-
-                    streams.push({
-                        name: `${name} ${r.resolution}`,
-                        title: r.lines,
-                        url: `${ADDON_BASE_URL}/${Deno.env.get("ADDON_SHARED_SECRET")}/nzb/stream/${hash}`,
-                        size: r.size,
-                    });
+                streams.push({
+                    name: `${getResolutionIcon(r.resolution)} ${prefix} ${r.resolution}`,
+                    title: r.lines,
+                    url: `${ADDON_BASE_URL}/${Deno.env.get("ADDON_SHARED_SECRET")}/nzb/stream/${hash}`,
+                    size: r.size,
                 });
+            });
 
-                await setPipeline.exec();
-                return jsonResponse({ streams });
+            await setPipeline.exec();
+            return jsonResponse({ streams });
 
-            } catch (err) {
-                console.error("Stream list error:", err);
-                return jsonResponse({ error: "Failed to load streams" }, 502);
-            }
-
-        } else {
-            return jsonResponse({ error: "Unauthorized" }, 401);
+        } catch (err) {
+            console.error("Stream list error:", err);
+            return jsonResponse({ error: "Failed to load streams" }, 502);
         }
     }
 
@@ -190,7 +202,6 @@ async function handler(req: Request): Promise<Response> {
             const apiKeyFromPath = match[1];
             const key = match[2];
 
-            // 1. Check the API Key
             if (apiKeyFromPath === Deno.env.get("ADDON_SHARED_SECRET")) {
 
                 if (!key) {
@@ -294,5 +305,28 @@ async function handler(req: Request): Promise<Response> {
 
     return jsonResponse({ error: "Not found" }, 404);
 }
+
+function getResolutionRank(resolution: string): number {
+    const r = resolution.toLowerCase();
+
+    if (r.includes("4k") || r.includes("2160")) return 4;
+    if (r.includes("1440") || r.includes("2k")) return 3;
+    if (r.includes("1080")) return 2;
+    if (r.includes("720")) return 1;
+
+    return 0; // Unknown
+}
+
+function getResolutionIcon(resolution: string): string {
+    const r = resolution.toLowerCase();
+
+    if (r.includes("4k") || r.includes("2160")) return "🔥 4K UHD";
+    if (r.includes("1440") || r.includes("2k")) return "🔥 2K";
+    if (r.includes("1080")) return "🚀 FHD";
+    if (r.includes("720")) return "💿 HD";
+
+    return "💩 Unknown"; // Unknown
+}
+
 
 Deno.serve({ port: Number(PORT) }, handler);

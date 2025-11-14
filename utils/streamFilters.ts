@@ -78,10 +78,13 @@ export function formatVideoCard(parsed: ParsedFilename | ParsedShow, options: Fo
   }
   if (parsed.group) sizeParts.push(`🏷️ ${parsed.group}`);
   // sizeParts.push(`📡 RARBG`);
-  if (age !== null) sizeParts.push(`⏳ ${age} days old`);
-  if (grabs !== null) sizeParts.push(`🤲 ${grabs} grabs`);
 
   const sizeLine = sizeParts.join(' ');
+
+  const ageParts = [];
+  if (age !== null) ageParts.push(`⏳ ${age} days old`);
+  if (grabs !== null) ageParts.push(`🤲 ${grabs} grabs`);
+  const ageLine = ageParts.join(' ');
 
   // Proxy / source info
   const proxyParts = [
@@ -89,9 +92,9 @@ export function formatVideoCard(parsed: ParsedFilename | ParsedShow, options: Fo
     source && `🔍 ${source}`,
   ].filter(Boolean);
 
-  const proxyLine = proxyParts.join(' ');
+  const _proxyLine = proxyParts.join(' ');
 
-  const lines = [titleLine, videoLine, audioLine, sizeLine, proxyLine].filter(Boolean).join('\n');
+  const lines = [titleLine, videoLine, audioLine, ageLine, sizeLine].filter(Boolean).join('\n');
   // Combine lines
   return {
     resolution,
