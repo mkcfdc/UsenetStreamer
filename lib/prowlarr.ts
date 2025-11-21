@@ -18,7 +18,6 @@ interface SearchPlan {
     query: string;
 }
 
-// Ensure ProwlarrResult is correctly typed to match usage
 interface ProwlarrResult {
     guid: string | null;
     title: string;
@@ -34,245 +33,161 @@ interface ProwlarrResult {
     fileName: string;
 }
 
-function isTorrentResult(result: ProwlarrResult): boolean {
-    const protocol = (
-        result.protocol ||
-        ""
-    ).toLowerCase();
-    if (protocol === "torrent") {
-        return true;
-    }
+// --- Helpers ---
 
+const isUsenetProtocol = (result: ProwlarrResult): boolean => {
+    if (result.protocol?.toLowerCase() !== "usenet") return false;
+
+    // Double check against magnet/torrent artifacts just in case
     const guid = (result.guid || "").toLowerCase();
     const downloadUrl = (result.downloadUrl || "").toLowerCase();
-
-    if (
-        guid.startsWith("magnet:") ||
-        downloadUrl.startsWith("magnet:")
-    ) {
-        return true;
+    if (guid.startsWith("magnet:") || downloadUrl.startsWith("magnet:") ||
+        guid.endsWith(".torrent") || downloadUrl.endsWith(".torrent")) {
+        return false;
     }
+    return true;
+};
 
-    if (
-        guid.endsWith(".torrent") ||
-        downloadUrl.endsWith(".torrent")
-    ) {
-        return true;
-    }
+const normalizeTitle = (title: string): string => {
+    return title
+        .toLowerCase()
+        .replace(/[\[\](){}]/g, '') // Remove brackets
+        .replace(/[^a-z0-9]+/g, ' ') // Non-alphanumeric to space
+        .replace(/\b(repack|proper|internal|multi|dual|hdr|dv|atmos|subs|webrip|webdl|web-dl|bluray|uhd|remux|hevc|h265|x265|x264|avc|h264|10bit|2160p|1080p|720p|480p|576p|hdr10|dolby|vision)\b/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+};
 
-    return false;
-}
+const fileMatchesEpisode = (fileName: string, season: number, episode: number): boolean => {
+    const s = season;
+    const e = episode;
+    // Regex patterns: S01E01, S1E1, 1x01, Ep 01
+    const patterns = [
+        new RegExp(`s0*${s}e0*${e}(?![0-9])`, "i"),
+        new RegExp(`s0*${s}\\.?e0*${e}(?![0-9])`, "i"),
+        new RegExp(`0*${s}[xX]0*${e}(?![0-9])`, "i"),
+        new RegExp(`[eE](?:pisode|p)\\.?\\s*0*${e}(?![0-9])`, "i"),
+    ];
+    return patterns.some((regex) => regex.test(fileName));
+};
+
+const titleContainsName = (title: string, name: string): boolean => {
+    const normalizedName = name.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const normalizedTitle = title.toLowerCase().replace(/[^a-z0-9]/g, '');
+    return normalizedTitle.includes(normalizedName);
+};
+
+// --- Main Logic ---
 
 export async function searchProwlarr(opts: ProwlarrSearchOptions): Promise<ProwlarrResult[]> {
-    const searchPlans: SearchPlan[] = [];
-    const seenPlans = new Set<string>();
+    // 1. Build Search Plans
+    const plans = new Map<string, SearchPlan>();
+    const defaultType = opts.type === "series" ? "tvsearch" : opts.type === "movie" ? "movie" : "search";
 
-    const addPlan = (planType: SearchPlan['type'], query: string) => {
-        if (!query) {
-            return false;
+    const addPlan = (type: SearchPlan['type'], query: string) => {
+        if (query && !plans.has(`${type}|${query}`)) {
+            plans.set(`${type}|${query}`, { type, query });
         }
-        const planKey = `${planType}|${query}`;
-        if (seenPlans.has(planKey)) {
-            return false;
-        }
-        seenPlans.add(planKey);
-        searchPlans.push({ type: planType, query });
-        return true;
     };
 
-    let prowlarrSearchType: SearchPlan['type'];
-    if (opts.type === "series") {
-        prowlarrSearchType = "tvsearch";
-    } else if (opts.type === "movie") {
-        prowlarrSearchType = "movie";
-    } else {
-        prowlarrSearchType = "search";
-    }
+    // ID-based plans
+    if (opts.imdbId) addPlan(defaultType, `{ImdbId:${opts.imdbId}}`);
+    if (opts.type === "series" && opts.tvdbId) addPlan("tvsearch", `{TvdbId:${opts.tvdbId}}`);
+    if (opts.type === "movie" && opts.tmdbId) addPlan("movie", `{TmdbId:${opts.tmdbId}}`);
 
-    // Plan 1: Search by IMDb ID
-    if (opts.imdbId) {
-        addPlan(prowlarrSearchType, `{ImdbId:${opts.imdbId}}`);
-    }
-
-    // Plan 2: Search by TVDB ID for series
-    if (opts.type === "series" && opts.tvdbId) {
-        addPlan("tvsearch", `{TvdbId:${opts.tvdbId}}`);
-    }
-
-    // Plan 3: Search by TMDB ID for movies
-    if (opts.type === "movie" && opts.tmdbId) {
-        addPlan("movie", `{TmdbId:${opts.tmdbId}}`);
-    }
-
-    // Fallback to text search if no ID-based plans were added or if specific season/episode is requested
-    const textQueryParts: string[] = [];
-    if (opts.name) {
-        textQueryParts.push(opts.name);
-    }
+    // Text fallback
+    const textParts: string[] = [];
+    if (opts.name) textParts.push(opts.name);
     if (opts.type === "movie" && opts.year) {
-        textQueryParts.push(`(${opts.year})`);
+        textParts.push(`(${opts.year})`);
     } else if (opts.type === "series" && opts.season && opts.episode) {
-        textQueryParts.push(`S${String(opts.season).padStart(2, "0")}E${String(opts.episode).padStart(2, "0")}`);
+        textParts.push(`S${String(opts.season).padStart(2, "0")}E${String(opts.episode).padStart(2, "0")}`);
     }
 
-    const textQueryFallback = textQueryParts.filter(Boolean).join(" ").trim();
-    if (textQueryFallback) {
-        addPlan("search", textQueryFallback);
-    }
+    const textQuery = textParts.join(" ").trim();
+    if (textQuery) addPlan("search", textQuery);
 
-    if (searchPlans.length === 0 && opts.imdbId) {
-        // If no specific plans were added, but an IMDb ID is available, add a generic IMDb search
-        addPlan(prowlarrSearchType, `{ImdbId:${opts.imdbId}}`);
-    }
+    // Fallback: if no specific ID plans exist but we have IMDB, ensure it's added
+    if (plans.size === 0 && opts.imdbId) addPlan(defaultType, `{ImdbId:${opts.imdbId}}`);
 
+    // 2. Prepare Execution Params
+    const categoryId = (opts.type === "series" || (opts.season && opts.episode)) ? "5000" : "2000";
+    const limit = String(opts.limit ?? 25);
 
-    const baseSearchParams = {
-        apikey: PROWLARR_API_KEY,
-        limit: String(opts.limit ?? 25),
-        offset: "0",
-        indexerIds: "-1",
-    };
+    const uniquePlans = Array.from(plans.values());
 
-    // Category Logic Update: Check for season/episode first for TV category
-    let categories: string;
-    if (opts.season && opts.episode) {
-        categories = "5000"; // Simplified to a single TV category (5000)
-    } else if (opts.type === "series") {
-        categories = "5000"; // Fallback to general TV categories
-    } else {
-        categories = "2000"; // Default to movie categories
-    }
-
-    const resultsByKey = new Map<string, ProwlarrResult>();
-
-    const planExecutions = searchPlans.map(async (plan) => {
+    // 3. Execute Searches in Parallel
+    const searchPromises = uniquePlans.map(async (plan) => {
         const params = new URLSearchParams({
-            ...baseSearchParams,
+            apikey: PROWLARR_API_KEY,
+            limit,
+            offset: "0",
+            indexerIds: "-1",
             type: plan.type,
             query: plan.query,
-            protocol: "usenet",
-            categories: categories, // Apply categories to each plan
+            protocol: "usenet", // We only want Usenet
+            categories: categoryId,
             ...(opts.season && { season: String(opts.season) }),
             ...(opts.episode && { ep: String(opts.episode) }),
         });
 
-        console.log("[Prowlarr] Dispatching plan:", plan, "with params:", params.toString());
         const url = `${PROWLARR_URL}/api/v1/search?${params.toString()}`;
-        console.log(`[Prowlarr] → ${url}`);
+        console.log(`[Prowlarr] Fetching: ${plan.type} -> ${plan.query}`);
 
         try {
             const data = await fetcher<ProwlarrResult[]>(url);
-            if (!Array.isArray(data)) {
-                console.warn("[Prowlarr] Unexpected response for plan", plan, data);
-                return [];
-            }
-            return data;
+            return Array.isArray(data) ? data : [];
         } catch (error: any) {
-            console.error("[PROWLARR] ❌ Search plan failed", {
-                message: error.message,
-                type: plan.type,
-                query: plan.query,
-            });
+            console.error(`[Prowlarr] Plan failed (${plan.query}):`, error.message);
             return [];
         }
     });
 
-    const allResults = await Promise.all(planExecutions);
+    const rawResultsGrouped = await Promise.all(searchPromises);
+    const flatResults = rawResultsGrouped.flat();
 
-    for (const planResults of allResults) {
-        const filteredResults = planResults.filter(r => {
-            if (!r || typeof r !== "object" || !r.downloadUrl) {
-                console.log(`[PROWLARR] Filtering out result (missing data): ${r?.title || 'N/A'}`);
-                return false;
-            }
-            if (isTorrentResult(r)) {
-                console.log(`[PROWLARR] Filtering out torrent result: ${r.title}`);
-                return false;
-            }
-            if (r.protocol.toLowerCase() !== "usenet") {
-                console.log(`[PROWLARR] Filtering out non-usenet result: ${r.title}`);
-                return false;
-            }
+    // 4. Filter & Deduplicate
+    const bestResults = new Map<string, ProwlarrResult>();
 
-            // Stricter filtering for season/episode
-            if (opts.season && opts.episode) {
-                const requestedEpisode = { season: opts.season, episode: opts.episode };
-                if (!fileMatchesEpisode(r.title, requestedEpisode)) {
-                    console.log(`[PROWLARR] Filtering out result (episode mismatch): ${r.title} for S${opts.season}E${opts.episode}`);
-                    return false;
-                }
-                console.log(`[PROWLARR] Keeping result (episode match): ${r.title} for S${opts.season}E${opts.episode}`);
+    for (const result of flatResults) {
+        // Basic Integrity Check
+        if (!result || !result.downloadUrl || !result.title) continue;
+
+        // Protocol Check
+        if (!isUsenetProtocol(result)) continue;
+
+        // Strict Series Matching
+        if (opts.season && opts.episode) {
+            if (!fileMatchesEpisode(result.title, opts.season, opts.episode)) {
+                console.debug(`[Prowlarr] Skipped (S${opts.season}E${opts.episode} mismatch): ${result.title}`);
+                continue;
             }
+        }
 
-            // Stricter filtering for show name
-            if (opts.name) {
-                const normalizedShowName = opts.name.toLowerCase().replace(/[^a-z0-9]/g, '');
-                const normalizedResultTitle = r.title.toLowerCase().replace(/[^a-z0-9]/g, '');
-                if (!normalizedResultTitle.includes(normalizedShowName)) {
-                    console.log(`[PROWLARR] Filtering out result (show name mismatch): ${r.title} for show ${opts.name}`);
-                    return false;
-                }
-                console.log(`[PROWLARR] Keeping result (show name match): ${r.title} for show ${opts.name}`);
-            }
+        // Strict Name Matching
+        if (opts.name && !titleContainsName(result.title, opts.name)) {
+            console.debug(`[Prowlarr] Skipped (Name mismatch): ${result.title}`);
+            continue;
+        }
 
-            return true;
-        });
+        // Deduplication: Keep largest file for same normalized title
+        const key = normalizeTitle(result.title);
+        const existing = bestResults.get(key);
 
-        // Smart deduplication
-        for (const item of filteredResults) {
-            const normalizedKey = normalizeTitle(item.title);
-            const existing = resultsByKey.get(normalizedKey);
-
-            // Keep only the best version (larger file or first seen)
-            if (!existing || item.size > existing.size) {
-                resultsByKey.set(normalizedKey, item);
-            }
+        if (!existing || result.size > existing.size) {
+            bestResults.set(key, result);
         }
     }
 
-    const dedupedNzbResults = Array.from(resultsByKey.values());
+    const finalResults = Array.from(bestResults.values());
 
-    // Sort: results with guid first
-    dedupedNzbResults.sort((a, b) => {
-        const aHasGuid = !!a.guid;
-        const bHasGuid = !!b.guid;
-        if (aHasGuid && !bHasGuid) return -1;
-        if (!aHasGuid && bHasGuid) return 1;
-        return 0;
+    // 5. Sort (GUID presence preference)
+    finalResults.sort((a, b) => {
+        if (a.guid && !b.guid) return -1;
+        if (!a.guid && b.guid) return 1;
+        return 0; // Keep existing order otherwise
     });
 
-    console.log(`[PROWLARR] Final aggregated unique NZB results: ${dedupedNzbResults.length}`);
-    return dedupedNzbResults;
-}
-
-interface RequestedEpisode {
-    season: number;
-    episode: number;
-}
-
-function fileMatchesEpisode(fileName: string, requestedEpisode: RequestedEpisode): boolean {
-    if (!requestedEpisode) {
-        return true;
-    }
-    const { season, episode } = requestedEpisode;
-    const patterns = [
-        new RegExp(`s0*${season}e0*${episode}(?![0-9])`, "i"),
-        new RegExp(`s0*${season}\.?e0*${episode}(?![0-9])`, "i"),
-        new RegExp(`0*${season}[xX]0*${episode}(?![0-9])`, "i"),
-        new RegExp(`[eE](?:pisode|p)\.?\\s*0*${episode}(?![0-9])`, "i"),
-    ];
-    return patterns.some((regex) => regex.test(fileName));
-}
-
-// Helper: normalize titles to deduplicate equivalent releases
-function normalizeTitle(title: string): string {
-    return title
-        .toLowerCase()
-        // remove brackets and punctuation
-        .replace(/[\[\](){}]/g, '')
-        .replace(/[^a-z0-9]+/g, ' ')
-        // remove common tags that create near-duplicates
-        .replace(/\b(repack|proper|internal|multi|dual|hdr|dv|atmos|subs|webrip|webdl|web-dl|bluray|uhd|remux|hevc|h265|x265|x264|avc|h264|10bit|2160p|1080p|720p|480p|576p|hdr10|dolby|vision)\b/g, '')
-        .replace(/\s+/g, ' ')
-        .trim();
+    console.log(`[Prowlarr] Found ${finalResults.length} unique results.`);
+    return finalResults;
 }

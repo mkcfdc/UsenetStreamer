@@ -31,6 +31,24 @@ downloads in NZBDav, and exposes the resulting media as Stremio streams.
 12. Added .strm support. This might be removed in the future. .strm files are
     just added metadata stored on the actual system. But using .strm will make
     use of altMount's streaming functionality, testing continues.
+13. Created an Open API for checking nzb files. This does not put any added
+    pressure on the Usenet servers or your Indexer API calls.
+
+### How to use nzbcheck.filmwhisper.dev:
+
+1. Create an API key by making an empty POST request to:
+   https://nzbcheck.filmwhisper.dev/api-key
+2. Fill in the added ENV vars inside .env file.
+3. This will add a green check mark to any files that have already been tested
+   as working.
+
+```env
+NZB_CHECK_URL=https://nzbcheck.filmwhisper.dev
+NZB_CHECK_API_KEY=SUPER_SECURE_KEY_NO_ONE_KNOWS
+```
+
+This adds no extra work to your server or to your Usenet server. It's very clean
+and highly cached. Give it a try and let me know what you think.
 
 ### altMount configuration:
 

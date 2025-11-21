@@ -9,10 +9,11 @@ import { parseRequestedEpisode } from "./utils/parseRequestedEpisode.ts";
 import { redis } from "./utils/redis.ts";
 
 import { streamFailureVideo } from "./lib/streamFailureVideo.ts";
-import { jsonResponse, textResponse } from "./utils/responseUtils.ts";
+import { jsonResponse } from "./utils/responseUtils.ts";
 
 import { filenameParse as parseRelease } from "@ctrl/video-filename-parser";
 import { formatVideoCard } from "./utils/streamFilters.ts";
+import { checkNzb } from "./lib/nzbcheck.ts";
 
 interface Stream {
     name: string;
@@ -21,21 +22,44 @@ interface Stream {
     size: number;
 }
 
+const PATTERNS = {
+    manifest: new URLPattern({ pathname: "/:apiKey/manifest.json" }),
+    stream: new URLPattern({ pathname: "/:apiKey/stream/:type/:encodedParams" }),
+    nzbStream: new URLPattern({ pathname: "/:apiKey/nzb/stream/:key" }),
+    nzbProxy: new URLPattern({ pathname: "/nzb/proxy/:hash.nzb" }), // Auto-handles extension check
+};
+
+// 2. Helper for Redis JSON (ReJSON returns arrays for path queries)
+function parseRedisJson<T>(raw: unknown): T | null {
+    if (!raw) return null;
+    try {
+        const val = typeof raw === "string" ? JSON.parse(raw) : raw;
+        // JSON.GET with '$' usually returns an array wrapping the object
+        return Array.isArray(val) ? val[0] : val;
+    } catch {
+        return null;
+    }
+}
+
 async function handler(req: Request): Promise<Response> {
     const url = new URL(req.url);
     const { pathname } = url;
     const method = req.method;
 
+    // --- GLOBAL CORS (OPTIONS) ---
     if (method === "OPTIONS") {
-        const corsHeaders = {
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type, Range",
-            "Access-Control-Max-Age": "86400",
-        };
-        return new Response(null, { status: 204, headers: corsHeaders });
+        return new Response(null, {
+            status: 204,
+            headers: {
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+                "Access-Control-Allow-Headers": "Content-Type, Range",
+                "Access-Control-Max-Age": "86400",
+            },
+        });
     }
 
+    // --- STATIC ASSETS ---
     if (pathname === "/assets/icon.png" && method === "GET") {
         try {
             const iconPath = join(Deno.cwd(), "public", "assets", "icon.png");
@@ -44,140 +68,141 @@ async function handler(req: Request): Promise<Response> {
                 headers: {
                     "Content-Type": "image/png",
                     "Cache-Control": "public, max-age=86400",
-                    "Access-Control-Allow-Origin": "*", // Manual CORS
+                    "Access-Control-Allow-Origin": "*",
                 },
             });
         } catch (err) {
             console.error("Failed to load icon.png:", err);
-            return textResponse("Not found", 404);
+            return new Response("Not found", { status: 404 });
         }
     }
 
+    // --- ROOT CHECK ---
     if (pathname === "/" && method === "GET") {
-        return textResponse("Hello, the server is running! This is using the mkcfdc version of UsenetStreamer by Sanket9225.");
+        return new Response(
+            "Hello, the server is running! This is using the mkcfdc version of UsenetStreamer by Sanket9225.",
+            { headers: { "Content-Type": "text/plain" } }
+        );
     }
 
-    if (pathname.endsWith("/manifest.json") && method === "GET") {
-        const expectedKeySegmentLength = pathname.length - "/manifest.json".length;
-        const apiKeyFromPath = pathname.substring(1, expectedKeySegmentLength);
+    // --- MANIFEST ---
+    const manifestMatch = PATTERNS.manifest.exec(url);
+    if (manifestMatch && method === "GET") {
+        const { apiKey } = manifestMatch.pathname.groups;
 
-        if (apiKeyFromPath === Deno.env.get("ADDON_SHARED_SECRET")) {
-            const manifest = {
-                id: "com.usenet.streamer",
-                version: "1.0.1",
-                name: "UsenetStreamer",
-                description:
-                    "Usenet-powered instant streams for Stremio via Prowlarr and NZBDav",
-                logo: `${ADDON_BASE_URL.replace(/\/$/, "")}/assets/icon.png`,
-                resources: ["stream"],
-                types: ["movie", "series"],
-                catalogs: [],
-                idPrefixes: ["tt"],
-            };
-            return jsonResponse(manifest);
-        } else {
+        if (apiKey !== Deno.env.get("ADDON_SHARED_SECRET")) {
             return jsonResponse({ error: "Unauthorized" }, 401);
         }
+
+        return jsonResponse({
+            id: "com.usenet.streamer",
+            version: "1.0.1",
+            name: "UsenetStreamer",
+            description: "Usenet-powered instant streams for Stremio via Prowlarr and NZBDav",
+            logo: `${ADDON_BASE_URL.replace(/\/$/, "")}/assets/icon.png`,
+            resources: ["stream"],
+            types: ["movie", "series"],
+            catalogs: [],
+            idPrefixes: ["tt"],
+        });
     }
 
-    const streamMatch = pathname.match(/^\/([^/]+)\/stream\/(movie|series)\/(.+)$/);
+    // --- STREAM HANDLER ---
+    const streamMatch = PATTERNS.stream.exec(url);
     if (streamMatch && method === "GET") {
-        const [_, apiKeyFromPath, type, imdbParam] = streamMatch;
-        if (type !== "movie" && type !== "series") {
-            return jsonResponse({ error: "Invalid media type" }, 400);
-        }
+        const { apiKey, type, encodedParams } = streamMatch.pathname.groups;
 
-        if (apiKeyFromPath !== Deno.env.get("ADDON_SHARED_SECRET")) {
-            return jsonResponse({ error: "Unauthorized" }, 401);
-        }
+        if (type !== "movie" && type !== "series") return jsonResponse({ error: "Invalid media type" }, 400);
+        if (apiKey !== Deno.env.get("ADDON_SHARED_SECRET")) return jsonResponse({ error: "Unauthorized" }, 401);
 
         try {
-            const decoded = decodeURIComponent(imdbParam).replace(".json", "");
-            const requestedInfo =
-                type === "series"
-                    ? parseRequestedEpisode(type, decoded) ?? {}
-                    : { imdbid: decoded };
+            const decoded = decodeURIComponent(encodedParams!).replace(".json", "");
+
+            // 1. Resolve Query Info
+            const requestedInfo = type === "series"
+                ? parseRequestedEpisode(type, decoded) ?? {}
+                : { imdbid: decoded };
 
             console.log("requestedInfo:", requestedInfo);
 
+            // 2. Fetch Search Results
             const { results } = await getMediaAndSearchResults(type, requestedInfo);
 
-            const processed = results.map(r => {
-                const parsed = parseRelease(r.title, type === "series" ? true : false);
+            // 3. Prepare NZB Checks (Loop 1)
+            const processedItems: any[] = [];
+            const itemsToCheck: any[] = [];
+
+            for (const r of results) {
+
+                if (r.indexer && r.guid) {
+                    const fileId = extractGuidFromUrl(r.guid);
+                    itemsToCheck.push({ source_indexer: r.indexer, file_id: fileId });
+                }
+                processedItems.push(r);
+            }
+
+            const nzbCheckResults = itemsToCheck.length ? await checkNzb(itemsToCheck) : { data: {} };
+            const nzbData = (nzbCheckResults?.data ?? {}) as Record<string, any>;
+
+            const grouped = new Map<string, any[]>();
+
+            for (const r of processedItems) {
+                // Merge Data
+                const rawIndexer = String(r.indexer ?? "");
+                // 1. FORCE LOWERCASE HERE TO MATCH THE API RESPONSE
+                const key = `${rawIndexer.toLowerCase()}:${String(extractGuidFromUrl(r.guid) ?? "")}`;
+                const status = nzbData[key];
+
+                // if (status) console.log(`Match found for ${key}:`, status.is_complete)
+                // else console.log(`No NZB check data for ${key}`);
+
+                r.is_complete = status?.is_complete ?? null;
+                r.cache_hit = status?.cache_hit ?? false;
+                r.last_updated = status?.last_updated ?? null;
+
+                // Format
+                const parsed = parseRelease(r.title, type === "series");
                 const { resolution, lines } = formatVideoCard(parsed, {
                     size: (r.size / (1024 ** 3)).toFixed(2).replace(/\.?0+$/, ""),
                     proxied: false,
                     source: r.indexer ?? "Usenet",
+                    isComplete: r.is_complete,
                     age: r.age,
                     grabs: r.grabs,
                 });
+                r.resolution = resolution;
+                r.lines = lines;
 
-                return {
-                    ...r,
-                    resolution,
-                    lines,
-                };
-            });
-
-            const grouped: Record<string, any[]> = {};
-            for (const r of processed) {
-                (grouped[r.resolution] ??= []).push(r);
+                // Group
+                if (!grouped.has(resolution)) grouped.set(resolution, []);
+                grouped.get(resolution)!.push(r);
             }
 
-            const filtered = Object.values(grouped)
-                .map(arr =>
-                    arr.sort((a, b) => (a.age - b.age) || (b.size - a.size)).slice(0, 5)
-                )
-                .flat();
+            // 6. Sort & Flatten
+            const filtered = Array.from(grouped.values())
+                .map(arr => arr.sort((a, b) => (a.age - b.age) || (b.size - a.size)).slice(0, 5))
+                .flat()
+                .sort((a, b) => getResolutionRank(b.resolution) - getResolutionRank(a.resolution));
 
-            filtered.sort((a, b) =>
-                getResolutionRank(b.resolution) - getResolutionRank(a.resolution)
-            );
-
+            // 7. Redis Cache Check (Pipeline)
             const getPipeline = redis.pipeline();
-            for (const r of filtered) {
-                getPipeline.call("JSON.GET", `streams:${md5(r.downloadUrl)}`, "$");
-            }
-            const existingRaw = await getPipeline.exec();
             const setPipeline = redis.pipeline();
 
+            for (const r of filtered) {
+                getPipeline.call("JSON.GET", `streams:${md5(r.downloadUrl)}`, "$.viewPath");
+            }
+
+            const cacheChecks = await getPipeline.exec();
             const streams: Stream[] = [];
 
             filtered.forEach((r, i) => {
                 const hash = md5(r.downloadUrl);
                 const key = `streams:${hash}`;
 
-                // normalize redis JSON value
-                const existingVal: any = existingRaw?.[i]?.[1];
-                const parsedExisting =
-                    typeof existingVal === "string"
-                        ? JSON.parse(existingVal)?.[0]
-                        : Array.isArray(existingVal)
-                            ? existingVal[0]
-                            : typeof existingVal === "object" && existingVal !== null
-                                ? (existingVal as any)[0] ?? existingVal
-                                : null;
-
-                const prefix = parsedExisting?.viewPath ? "⚡" : "";
-
-                // Write cache only if missing
-                if (!parsedExisting) {
-                    setPipeline.call(
-                        "JSON.SET",
-                        key,
-                        "$",
-                        JSON.stringify({
-                            downloadUrl: r.downloadUrl,
-                            title: r.title,
-                            size: r.size,
-                            type: type,
-                            fileName: r.fileName,
-                            rawImdbId: decoded,
-                        }),
-                        "NX",
-                    );
-                    setPipeline.expire(key, 60 * 60 * 48);
-                }
+                // Parse Redis response (checking if viewPath exists)
+                const cacheResult = cacheChecks?.[i]?.[1];
+                const hasViewPath = Array.isArray(cacheResult) && cacheResult.length > 0 && cacheResult[0];
+                const prefix = hasViewPath ? "⚡" : "";
 
                 streams.push({
                     name: `${getResolutionIcon(r.resolution)} ${prefix} ${r.resolution}`,
@@ -185,6 +210,24 @@ async function handler(req: Request): Promise<Response> {
                     url: `${ADDON_BASE_URL}/${Deno.env.get("ADDON_SHARED_SECRET")}/nzb/stream/${hash}`,
                     size: r.size,
                 });
+
+                if (!hasViewPath) {
+                    setPipeline.call(
+                        "JSON.SET", key, "$",
+                        JSON.stringify({
+                            downloadUrl: r.downloadUrl,
+                            title: r.title,
+                            size: r.size,
+                            guid: extractGuidFromUrl(r.guid),
+                            indexer: r.indexer,
+                            type,
+                            fileName: r.fileName,
+                            rawImdbId: decoded,
+                        }),
+                        "NX"
+                    );
+                    setPipeline.expire(key, 60 * 60 * 48);
+                }
             });
 
             await setPipeline.exec();
@@ -196,105 +239,71 @@ async function handler(req: Request): Promise<Response> {
         }
     }
 
-    if ((method === "GET" || method === "HEAD")) {
-        const match = pathname.match(/^\/([^/]+)\/nzb\/stream\/([^/]+)$/);
+    // --- NZB STREAM PROXY ---
+    const nzbStreamMatch = PATTERNS.nzbStream.exec(url);
+    if (nzbStreamMatch && (method === "GET" || method === "HEAD")) {
+        const { apiKey, key } = nzbStreamMatch.pathname.groups;
 
-        if (match) {
-            const apiKeyFromPath = match[1];
-            const key = match[2];
+        if (apiKey !== Deno.env.get("ADDON_SHARED_SECRET")) {
+            return jsonResponse({ error: "Unauthorized" }, 401);
+        }
 
-            if (apiKeyFromPath === Deno.env.get("ADDON_SHARED_SECRET")) {
+        if (!key) {
+            return (await streamFailureVideo(req)) || jsonResponse({ error: "Missing key" }, 502);
+        }
 
-                if (!key) {
-                    const failureResponse = await streamFailureVideo(req);
-                    if (failureResponse) return failureResponse;
-                    return jsonResponse({ error: "Missing key" }, 502);
-                }
-
-                console.log(`${method} Request made for ${key}`);
-                try {
-                    return await streamNzbdavProxy(key, req);
-                } catch (err) {
-                    console.error("NZBDAV proxy error:", err);
-
-                    const failureResponse = await streamFailureVideo(req);
-                    if (failureResponse) return failureResponse;
-
-                    if (method === "GET") {
-                        return jsonResponse({ error: "UPSTREAM ERROR" }, 502);
-                    } else { // HEAD
-                        return jsonResponse({ error: "Failed to stream file" }, 502);
-                    }
-                }
-            } else {
-                return jsonResponse({ error: "Unauthorized" }, 401);
-            }
+        console.log(`${method} Request made for ${key}`);
+        try {
+            return await streamNzbdavProxy(key, req);
+        } catch (err) {
+            console.error("NZBDAV proxy error:", err);
+            return (await streamFailureVideo(req)) || jsonResponse({ error: "Upstream Error" }, 502);
         }
     }
 
-
-    const proxyMatch = pathname.match(/^\/nzb\/proxy\/([a-f0-9]+)\.nzb$/i);
+    // --- NZB FILE PROXY ---
+    const proxyMatch = PATTERNS.nzbProxy.exec(url);
     if (proxyMatch && method === "GET") {
-        if (!proxyMatch) {
-            return new Response("Not Found", { status: 404 });
-        }
-
-        const hash = proxyMatch[1];
+        const { hash } = proxyMatch.pathname.groups;
         const redisKey = `streams:${hash}`;
         const resolvedKey = `${redisKey}:resolved`;
 
         try {
+            // 1. Get Data from Redis
             const dataRaw = await redis.call("JSON.GET", redisKey, "$");
-            if (!dataRaw) {
-                return new Response("Unknown NZB hash", { status: 404 });
-            }
+            const data = parseRedisJson<{ downloadUrl?: string }>(dataRaw);
 
-            let parsedData: any;
-            if (typeof dataRaw === "string") {
-                try {
-                    parsedData = JSON.parse(dataRaw);
-                } catch {
-                    parsedData = dataRaw;
-                }
-            } else {
-                parsedData = dataRaw;
-            }
-
-            const data = Array.isArray(parsedData) ? parsedData[0] : parsedData;
             if (!data?.downloadUrl) {
-                return new Response("Invalid stream record", { status: 400 });
+                return new Response("Unknown NZB hash or invalid record", { status: 404 });
             }
 
-            const downloadUrl: string = data.downloadUrl;
-            let resolvedUrl: string | null = await redis.get(resolvedKey);
+            // 2. Resolve Redirects (Prowlarr usually redirects to the indexer)
+            let resolvedUrl = await redis.get(resolvedKey);
 
             if (!resolvedUrl) {
-                const resp = await fetch(downloadUrl, { redirect: "manual" });
+                const resp = await fetch(data.downloadUrl, { redirect: "manual" });
                 if (![301, 302].includes(resp.status)) {
-                    return new Response(`Unexpected Prowlarr status: ${resp.status}`, {
-                        status: 500,
-                    });
+                    return new Response(`Unexpected Prowlarr status: ${resp.status}`, { status: 500 });
                 }
 
                 resolvedUrl = resp.headers.get("location");
-                if (!resolvedUrl) {
-                    return new Response("Redirect missing 'Location' header", { status: 500 });
-                }
+                if (!resolvedUrl) return new Response("Redirect missing Location header", { status: 500 });
 
                 await redis.setex(resolvedKey, 21600, resolvedUrl);
             }
 
+            // 3. Fetch Actual NZB
             const nzbResp = await fetch(resolvedUrl);
             if (!nzbResp.ok) {
-                if (nzbResp.status === 404) {
-                    await redis.del(resolvedKey);
-                }
+                if (nzbResp.status === 404) await redis.del(resolvedKey); // Clear bad cache
                 return new Response(await nzbResp.text(), { status: nzbResp.status });
             }
 
+            // 4. Serve NZB
             const headers = new Headers(nzbResp.headers);
             headers.set("Content-Disposition", `attachment; filename="${hash}.nzb"`);
-            headers.set("Content-Type", headers.get("content-type") ?? "application/x-nzb");
+            // Ensure correct content type
+            if (!headers.get("content-type")) headers.set("Content-Type", "application/x-nzb");
 
             return new Response(nzbResp.body, { headers });
 
@@ -327,6 +336,25 @@ function getResolutionIcon(resolution: string): string {
     if (r.includes("720")) return "💿 HD";
 
     return "💩 Unknown"; // Unknown
+}
+
+function extractGuidFromUrl(urlString: string): string | undefined {
+    try {
+        const url = new URL(urlString);
+
+        // 1. Check if it's a Query Parameter (NZBGeek style: ?guid=...)
+        const guidParam = url.searchParams.get("guid");
+        if (guidParam) return guidParam;
+
+        // 2. Fallback to the last part of the Path (NZBPlanet style: /details/...)
+        // split by '/' and filter out empty strings (handles trailing slashes)
+        const pathSegments = url.pathname.split('/').filter(Boolean);
+        return pathSegments.pop();
+
+    } catch (_error: unknown) {
+        console.error("Invalid URL provided:", urlString);
+        return undefined;
+    }
 }
 
 

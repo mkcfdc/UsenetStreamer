@@ -5,7 +5,6 @@ https://github.com/panteLx/UsenetStreamer
 */
 
 import { extname } from "@std/path/posix";
-
 import {
     VIDEO_MIME_MAP,
     NZBDAV_WEBDAV_URL,
@@ -16,6 +15,13 @@ import {
 import { streamFailureVideo } from "../streamFailureVideo.ts";
 import { getWebdavClient } from "../../utils/webdav.ts";
 
+
+const httpClient = Deno.createHttpClient({
+    poolIdleTimeout: 30_000,
+    poolMaxIdlePerHost: 20,
+    http2: true,
+});
+
 function inferMimeType(fileName: string) {
     const ext = extname(fileName.toLowerCase());
     return VIDEO_MIME_MAP.get(ext) || "application/octet-stream";
@@ -25,19 +31,18 @@ function sanitizeFileName(file: string) {
     return file.replace(/[\\/:*?"<>|]+/g, "_") || "stream";
 }
 
-/**
- * Proxies an NZBDav stream request to an upstream WebDAV server.
- *
- * @param req The standard Deno Request object.
- * @param viewPath The relative path to the file on the WebDAV server.
- * @param fileNameHint An optional hint for the filename.
- * @returns A Promise that resolves to the final Deno Response object.
- */
-const httpClient = Deno.createHttpClient({
-    poolIdleTimeout: 60_000,
-    poolMaxIdlePerHost: 8,
-    http2: true,
-});
+async function cleanupOnError(viewPath: string, reason: string) {
+    console.warn(`[NZBDAV] Stream failure cleanup: ${reason}`);
+    try {
+        const webdav = await getWebdavClient();
+        const viewPathFolder = viewPath.substring(0, viewPath.lastIndexOf("/"));
+        await webdav.deleteFile(viewPathFolder, { recursive: true });
+        console.log(`[NZBDAV] Deleted folder: ${viewPathFolder}`);
+    } catch (err) {
+        console.error(`[NZBDAV] Failed to clean up folder:`, err);
+    }
+}
+
 export async function proxyNzbdavStream(
     req: Request,
     viewPath: string,
@@ -46,139 +51,87 @@ export async function proxyNzbdavStream(
 ): Promise<Response> {
     const method = req.method.toUpperCase();
 
-    if (!["GET", "HEAD"].includes(method)) {
+    if (method !== "GET" && method !== "HEAD") {
         return new Response("Method Not Allowed", { status: 405 });
     }
 
-    const emulateHead = method === "HEAD";
-    const upstreamMethod = "GET";
-
-    let targetUrl;
-
-    const cleanPath = viewPath.replace(/^\/+/, "");
-    const encodedPath = cleanPath.split("/").map(encodeURIComponent).join("/");
-    const base = NZBDAV_WEBDAV_URL.replace(/\/+$/, "");
-    if (!USE_STRM_FILES) {
-        targetUrl = `${base}/${encodedPath}`;
+    let targetUrl: URL;
+    if (USE_STRM_FILES) {
+        targetUrl = new URL(viewPath);
     } else {
-        targetUrl = viewPath;
+        const base = NZBDAV_WEBDAV_URL.replace(/\/+$/, "");
+        targetUrl = new URL(`${base}/${viewPath.replace(/^\/+/, "")}`);
     }
 
-    let fileName = fileNameHint || targetUrl.split("/").pop() || "stream";
-    fileName = sanitizeFileName(decodeURIComponent(fileName));
+    const fileName = sanitizeFileName(
+        decodeURIComponent(fileNameHint || targetUrl.pathname.split("/").pop() || "stream")
+    );
 
-    // 2. Prepare Upstream Headers
     const requestHeaders = new Headers();
-    requestHeaders.set("Connection", "keep-alive");
-    requestHeaders.set("Accept-Encoding", req.headers.get("accept-encoding") || "identity");
 
-    // Forward Range headers
     const range = req.headers.get("range");
     const ifRange = req.headers.get("if-range");
-    console.log(`[HTTP Request] Path: ${cleanPath} | Method: ${method} | Range Header: ${range || 'None'}`);
 
     if (range) requestHeaders.set("Range", range);
     if (ifRange) requestHeaders.set("If-Range", ifRange);
 
-    // If emulating HEAD (client sent HEAD) AND no range, request a minimal range
-    if (emulateHead && !range) {
-        requestHeaders.set("Range", "bytes=0-0");
-    }
-
-    // Add Basic Auth
     if (NZBDAV_WEBDAV_USER && NZBDAV_WEBDAV_PASS && !USE_STRM_FILES) {
-        const token = btoa(`${NZBDAV_WEBDAV_USER}:${NZBDAV_WEBDAV_PASS}`);
-        requestHeaders.set("Authorization", `Basic ${token}`);
+        requestHeaders.set("Authorization", `Basic ${btoa(`${NZBDAV_WEBDAV_USER}:${NZBDAV_WEBDAV_PASS}`)}`);
     }
 
-    const ac = new AbortController();
-
-    const upstream = await fetch(targetUrl, {
-        method: upstreamMethod,
-        headers: requestHeaders,
-        client: httpClient, // may help with performance
-        signal: ac.signal,
-    }).catch(async (e) => {
-        console.error("[NZBDAV] Fetch failed:", e.message);
-        if (inFileSystem) {
-            const webdav = await getWebdavClient();
-            const viewPathFolder = viewPath.substring(0, viewPath.lastIndexOf("/"));
-            const deletePath = await webdav.deleteFile(viewPathFolder, { recursive: true });
-            if (deletePath) console.log(`[NZBDAV] Deleted folder due to fetch failure: ${viewPathFolder}`);
-        }
-        return await streamFailureVideo(req, `NZBDAV Fetch Error: ${e.message}`);
-    });
-
-    if (!upstream || !upstream.ok) {
-        const statusCode = upstream?.status || 502;
-        const err: any = new Error(`Upstream returned status ${statusCode}`);
-        err.response = { status: statusCode };
-        if (inFileSystem) {
-            const webdav = await getWebdavClient();
-            const viewPathFolder = viewPath.substring(0, viewPath.lastIndexOf("/"));
-            const deletePath = await webdav.deleteFile(viewPathFolder, { recursive: true });
-            if (deletePath) console.log(`[NZBDAV] Deleted folder due to fetch failure: ${viewPathFolder}`);
-        }
-        const resp = await streamFailureVideo(req, `NZBDAV Upstream Error: ${statusCode}`);
-        return resp ?? new Response(`NZBDAV Upstream Error: ${statusCode}`, { status: statusCode });
+    let upstream: Response;
+    try {
+        upstream = await fetch(targetUrl.toString(), {
+            method: method,
+            headers: requestHeaders,
+            client: httpClient,
+            redirect: "follow", // Important for some WebDAV setups
+        });
+    } catch (e: any) {
+        if (inFileSystem) await cleanupOnError(viewPath, `Fetch failed: ${e.message}`);
+        return (await streamFailureVideo(req, `Fetch Error: ${e.message}`)) || new Response("Upstream Error", { status: 502 });
     }
 
-    // 5. Prepare Response Headers
-    const responseHeaders = new Headers();
-    const block = new Set(["transfer-encoding", "set-cookie", "authorization"]);
+    if (!upstream.ok) {
+        if (inFileSystem) await cleanupOnError(viewPath, `Upstream status ${upstream.status}`);
 
-    // Copy Upstream Headers, skipping blocked ones
-    upstream.headers.forEach((value, key) => {
-        if (!block.has(key.toLowerCase())) {
-            responseHeaders.set(key, value);
-        }
-    });
+        // If upstream 404s, return 404 immediately
+        if (upstream.status === 404) return new Response("Not Found", { status: 404 });
 
-    // Custom/Required Headers
-    if (!responseHeaders.has("Content-Disposition")) {
-        responseHeaders.set("Content-Disposition", `inline; filename="${fileName}"`);
+        return (await streamFailureVideo(req, `Upstream Error: ${upstream.status}`)) ||
+            new Response(`Upstream Error: ${upstream.status}`, { status: upstream.status });
     }
 
-    // Set inferred Content-Type if missing or generic
-    if (!responseHeaders.has("Content-Type") || responseHeaders.get("Content-Type") === "application/octet-stream") {
+    const responseHeaders = new Headers(upstream.headers);
+
+    const blockList = ["server", "set-cookie", "transfer-encoding", "connection", "keep-alive", "authorization"];
+    blockList.forEach(h => responseHeaders.delete(h));
+
+    responseHeaders.set("Access-Control-Allow-Origin", "*");
+    responseHeaders.set("Access-Control-Expose-Headers", "Content-Length, Content-Range, Content-Type, Accept-Ranges");
+
+    const existingType = responseHeaders.get("Content-Type");
+    if (!existingType || existingType === "application/octet-stream") {
         responseHeaders.set("Content-Type", inferMimeType(fileName));
     }
 
-    // Necessary headers for streaming
-    responseHeaders.set("Accept-Ranges", "bytes");
-    responseHeaders.set("Access-Control-Allow-Origin", "*");
-    responseHeaders.set(
-        "Access-Control-Expose-Headers",
-        "Content-Length,Content-Range,Content-Type",
-    );
-    responseHeaders.set("Connection", "keep-alive");
+    responseHeaders.set("Content-Disposition", `inline; filename="${fileName}"`);
 
-    const rangeHeader = upstream.headers.get("content-range");
-    const match = rangeHeader?.match(/bytes (\d+)-(\d+)\/(\d+|\*)/);
-    if (match && match[3] !== "*") {
-        const len = Number(match[2]) - Number(match[1]) + 1;
-        responseHeaders.set("Content-Length", String(len));
-    }
-
-    const status = upstream.status === 206 ? 206 : 200;
-
-    if (emulateHead) {
+    if (method === "HEAD") {
         await upstream.body?.cancel();
-        return new Response(null, { status: status, headers: responseHeaders });
+        return new Response(null, {
+            status: upstream.status,
+            headers: responseHeaders
+        });
     }
 
     if (!upstream.body) {
-        if (inFileSystem) {
-            const webdav = await getWebdavClient();
-            const viewPathFolder = viewPath.substring(0, viewPath.lastIndexOf("/"));
-            const deletePath = await webdav.deleteFile(viewPathFolder, { recursive: true });
-            if (deletePath) console.log(`[NZBDAV] Deleted folder due to empty body: ${viewPathFolder}`);
-        }
-        return await streamFailureVideo(req, "NZBDAV Upstream Error: Empty Body") || new Response("NZBDAV Upstream Error: Empty Body", { status: 502 });
+        if (inFileSystem) await cleanupOnError(viewPath, "Empty Body received");
+        return new Response("Upstream returned empty body", { status: 502 });
     }
 
     return new Response(upstream.body, {
-        status: status,
+        status: upstream.status, // Pass 200 or 206 exactly as received
         headers: responseHeaders,
     });
 }

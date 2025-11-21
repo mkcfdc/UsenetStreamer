@@ -1,14 +1,18 @@
+import { extname } from "@std/path/posix";
 import { normalizeNzbdavPath, listWebdavDirectory, type WebdavEntry } from "./webdav.ts";
 import { NZBDAV_MAX_DIRECTORY_DEPTH, NZBDAV_URL, NZBDAV_VIDEO_EXTENSIONS, USE_STRM_FILES } from "../env.ts";
-import { extname } from "@std/path/posix";
-
 
 interface FileCandidate {
     name: string;
-    size: number | string;
+    size: number;
     matchesEpisode: boolean;
     absolutePath: string;
     viewPath: string;
+}
+
+interface EpisodeInfo {
+    season?: number;
+    episode?: number;
 }
 
 interface FindFileParams {
@@ -18,68 +22,87 @@ interface FindFileParams {
     title?: string;
 }
 
-interface EpisodeInfo {
-    season?: number;
-    episode?: number;
+export async function findBestVideoFile(params: FindFileParams): Promise<FileCandidate | null> {
+    // 1. Strategy: Check local STRM files first (Fastest)
+    if (USE_STRM_FILES) {
+        const strmCandidate = await findStrmCandidate(params);
+        if (strmCandidate) return strmCandidate;
+    }
+
+    // 2. Strategy: Scan WebDAV directory (Recursive/Fallback)
+    return await findWebdavCandidate(params);
 }
 
-export async function findBestVideoFile({
-    category,
-    jobName,
-    requestedEpisode,
-}: FindFileParams): Promise<FileCandidate | null> {
+/**
+ * Strategy 1: Local STRM File Check
+ * Checks specific local directories for .strm files pointing to the content.
+ */
+async function findStrmCandidate({ category, jobName }: FindFileParams): Promise<FileCandidate | null> {
+    const strmDir = `/strm/content/${category}/${jobName}/`;
 
-    // check for a strm file first
-    if (USE_STRM_FILES) {
-        console.log("[STRM] Checking for STRM file...");
+    console.log(`[STRM] Checking directory: ${strmDir}`);
 
-        const strmDir = `/strm/content/${category}/${jobName}/`;
-        const statInfo = await Deno.stat(strmDir).catch(() => null);
+    // Check if directory exists
+    try {
+        const stat = await Deno.stat(strmDir);
+        if (!stat.isDirectory) return null;
+    } catch {
+        console.log(`[STRM] Directory not found: ${strmDir}`);
+        return null; // Dir doesn't exist
+    }
 
-        // Directory does not exist → skip
-        if (!statInfo || !statInfo.isDirectory) {
-            console.log(`[STRM CHECK] No STRM dir found for "${jobName}". Moving to webdav...`);
-        } else {
-            // Directory exists → search for *.strm
-            for await (const entry of Deno.readDir(strmDir)) {
-                if (entry.isFile && entry.name.toLowerCase().endsWith(".strm")) {
+    // Iterate directory
+    for await (const entry of Deno.readDir(strmDir)) {
+        if (!entry.isFile || !entry.name.toLowerCase().endsWith(".strm")) continue;
 
-                    const strmFilePath = `${strmDir}${entry.name}`;
-                    console.log(`[STRM] Found STRM file: ${strmFilePath}`);
+        const strmFilePath = `${strmDir}${entry.name}`;
+        console.log(`[STRM] Found STRM file: ${strmFilePath}`);
 
-                    const url = Deno.readTextFileSync(strmFilePath).trim();
+        try {
+            const content = await Deno.readTextFile(strmFilePath);
+            const urlStr = content.trim();
+            if (!urlStr) continue;
 
-                    if (!url) {
-                        console.warn(`[STRM] Empty STRM file: ${entry.name}`);
-                        break;
-                    }
-                    // delete the file to keep the file system clean
-                    //const _deleteFile = Deno.removeSync(strmFilePath);
-                    //console.log(`[STRM] Deleted STRM file: ${strmFilePath}`);
+            const urlObj = new URL(urlStr);
+            const pathParam = urlObj.searchParams.get("path");
 
-                    const urlObj = new URL(url);
-                    const pathParam = urlObj.searchParams.get("path") || "";
-                    const fileName = pathParam.split("/").pop() || entry.name;
-                    const stripSabdb = NZBDAV_URL.replace("/sabnzbd", "");
+            if (!pathParam) continue;
 
-                    return {
-                        viewPath: url.replace("http://localhost:8080", stripSabdb),
-                        absolutePath: pathParam,
-                        name: fileName,
-                        size: statInfo.size,
-                        matchesEpisode: true,
-                    };
-                }
-            }
+            // Construct the external view path
+            // Removing /sabnzbd from the base URL if present to form the base public URL
+            const publicBaseUrl = NZBDAV_URL.replace(/\/sabnzbd\/?$/, "");
+            // Replace localhost reference from STRM generator with actual public base
+            const viewPath = urlStr.replace("http://localhost:8080", publicBaseUrl);
+            const fileName = pathParam.split("/").pop() || entry.name;
 
-            console.log(`[STRM] No *.strm files found inside: ${strmDir}`);
+            // Note: We don't know the exact file size of the target here easily without a HEAD request,
+            // so we default to a placeholder or 0 if not critical, or the strm file size.
+            // The original code used directory size? Assuming statInfo from dir, but that's wrong for file size.
+            // We will just use 0 or a dummy value as STRM usually implies direct playback validity.
+
+            return {
+                viewPath,
+                absolutePath: pathParam,
+                name: fileName,
+                size: 0,
+                matchesEpisode: true, // If a STRM exists for this specific job, it's a match
+            };
+
+        } catch (e) {
+            console.warn(`[STRM] Error reading file ${strmFilePath}:`, e);
         }
     }
 
+    console.log(`[STRM] No valid *.strm files found in ${strmDir}`);
+    return null;
+}
 
-
+/**
+ * Strategy 2: WebDAV Directory Traversal
+ * Recursively searches WebDAV for the largest matching video file.
+ */
+async function findWebdavCandidate({ category, jobName, requestedEpisode }: FindFileParams): Promise<FileCandidate | null> {
     const rootPath = normalizeNzbdavPath(`/content/${category}/${jobName}`);
-
     const queue = [{ path: rootPath, depth: 0 }];
     const visited = new Set<string>();
 
@@ -88,43 +111,52 @@ export async function findBestVideoFile({
 
     while (queue.length > 0) {
         const { path: currentPath, depth } = queue.shift()!;
+
         if (depth > NZBDAV_MAX_DIRECTORY_DEPTH || visited.has(currentPath)) continue;
         visited.add(currentPath);
 
-        let entries: WebdavEntry[] = [];
+        let entries: WebdavEntry[];
         try {
             entries = await listWebdavDirectory(currentPath);
-        } catch (e) {
-            console.error(`[NZBDAV] Failed to list ${currentPath}; Path not found`);
+        } catch {
+            // Silent fail for navigation errors, just skip this path
             continue;
         }
 
         for (const entry of entries) {
-            if (!entry.name || entry.size === null) continue;
+            if (!entry.name) continue;
 
-            const nextPath = normalizeNzbdavPath(`${currentPath}/${entry.name}`);
+            const fullEntryPath = normalizeNzbdavPath(`${currentPath}/${entry.name}`);
 
             if (entry.isDirectory) {
-                queue.push({ path: nextPath + "/", depth: depth + 1 });
+                queue.push({ path: fullEntryPath + "/", depth: depth + 1 });
                 continue;
             }
 
-            if (!isVideoFileName(entry.name)) continue;
+            // Skip non-video files or files with no size
+            if (!entry.size || !isVideoFileName(entry.name)) continue;
 
             const matchesEpisode = fileMatchesEpisode(entry.name, requestedEpisode);
+
             const candidate: FileCandidate = {
                 name: entry.name,
-                size: entry.size,
+                size: typeof entry.size === 'string' ? parseInt(entry.size) : entry.size,
                 matchesEpisode,
-                absolutePath: nextPath,
-                viewPath: nextPath.replace(/^\/+/, ""),
+                absolutePath: fullEntryPath,
+                viewPath: fullEntryPath.replace(/^\/+/, ""), // Remove leading slashes for view path
             };
+
+            // Logic:
+            // 1. Prioritize Episode Match: Largest file that matches specific SxxExx
+            // 2. Fallback: Largest video file found generally (Main Movie or if detection fails)
 
             if (matchesEpisode) {
                 if (!bestEpisodeMatch || candidate.size > bestEpisodeMatch.size) {
                     bestEpisodeMatch = candidate;
                 }
             }
+
+            // Track overall largest file just in case
             if (!bestMatch || candidate.size > bestMatch.size) {
                 bestMatch = candidate;
             }
@@ -134,30 +166,27 @@ export async function findBestVideoFile({
     return bestEpisodeMatch || bestMatch || null;
 }
 
-function fileMatchesEpisode(fileName: string, requestedEpisode: EpisodeInfo | undefined): boolean {
-    if (!requestedEpisode) {
-        return true;
+// --- Helpers ---
+
+function isVideoFileName(fileName: string): boolean {
+    const ext = extname(fileName).toLowerCase();
+    return NZBDAV_VIDEO_EXTENSIONS.has(ext);
+}
+
+function fileMatchesEpisode(fileName: string, requestedEpisode?: EpisodeInfo): boolean {
+    if (!requestedEpisode || !requestedEpisode.season || !requestedEpisode.episode) {
+        return true; // No specific episode requested, so it "matches"
     }
+
     const { season, episode } = requestedEpisode;
 
-    const s = String(season);
-    const e = String(episode);
-
+    // Regex patterns for common naming conventions
     const patterns = [
-        // S01E01 (must not be followed by another number, e.g., S01E010)
-        new RegExp(`s0*${s}e0*${e}(?![0-9])`, "i"),
-        // S01.E01 (with optional dot)
-        new RegExp(`s0*${s}\\.?e0*${e}(?![0-9])`, "i"),
-        // 1x01 (season X episode)
-        new RegExp(`0*${s}[xX]0*${e}(?![0-9])`, "i"),
-        // E01 (episode-only match, useful for single-season series)
-        new RegExp(`[eE](?:pisode|p)\\.?\\s*0*${e}(?![0-9])`, "i"),
+        new RegExp(`s0*${season}e0*${episode}(?![0-9])`, "i"),       // S01E01
+        new RegExp(`s0*${season}\\.?e0*${episode}(?![0-9])`, "i"),   // S01.E01
+        new RegExp(`0*${season}[xX]0*${episode}(?![0-9])`, "i"),     // 1x01
+        new RegExp(`[eE](?:pisode|p)\\.?\\s*0*${episode}(?![0-9])`, "i"), // Ep 01
     ];
 
     return patterns.some((regex) => regex.test(fileName));
-}
-
-function isVideoFileName(fileName: string = ""): boolean {
-    const extension = extname(fileName.toLowerCase());
-    return NZBDAV_VIDEO_EXTENSIONS.has(extension);
 }

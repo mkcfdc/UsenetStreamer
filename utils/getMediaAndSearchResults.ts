@@ -16,8 +16,9 @@ interface CinemetaData {
 }
 
 
-interface ProwlarrResult {
+export interface ProwlarrResult {
     guid: string | null;
+    fileId?: string;
     title: string;
     downloadUrl: string;
     size: number;

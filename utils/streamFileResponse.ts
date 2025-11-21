@@ -1,3 +1,6 @@
+import { contentType } from "@std/media-types";
+import { extname } from "@std/path";
+
 export async function streamFileResponse(
     req: Request,
     path: string,
@@ -23,12 +26,15 @@ export async function streamFileResponse(
     let code = 200;
     let start = 0;
     let end = size - 1;
-    let responseBody: BodyInit | null = null;
 
     // 2. Set base headers
     const finalHeaders = new Headers(initialHeaders);
     finalHeaders.set("Accept-Ranges", "bytes");
-    finalHeaders.set("Content-Type", "video/mp4");
+
+    // Auto-detect content type or fallback
+    const mime = contentType(extname(path)) || "video/mp4";
+    finalHeaders.set("Content-Type", mime);
+
     if (stat.mtime) {
         finalHeaders.set("Last-Modified", stat.mtime.toUTCString());
     }
@@ -36,32 +42,45 @@ export async function streamFileResponse(
     // 3. Handle HEAD request
     if (isHead) {
         finalHeaders.set("Content-Length", size.toString());
-        console.log(`[${logPrefix}] HEAD ${path}`);
         return new Response(null, { status: 200, headers: finalHeaders });
     }
 
     // 4. Handle Range request
     const rangeHeader = req.headers.get("Range");
-    const m = rangeHeader?.match(/^bytes=(\d*)-(\d*)$/);
+    if (rangeHeader) {
+        const rangeMatch = rangeHeader.match(/^bytes=(\d*)-(\d*)$/);
 
-    if (m) {
-        const s = m[1] ? Number(m[1]) : 0;
-        const e = m[2] ? Number(m[2]) : size - 1;
+        if (rangeMatch) {
+            const startStr = rangeMatch[1];
+            const endStr = rangeMatch[2];
 
-        if (s >= size) {
-            // Range out of bounds
-            finalHeaders.set("Content-Range", `bytes */${size}`);
-            return new Response(null, { status: 416, headers: finalHeaders });
+            if (startStr && !endStr) {
+                // bytes=100-
+                start = Number(startStr);
+                end = size - 1;
+            } else if (!startStr && endStr) {
+                // bytes=-100 (suffix range: last 100 bytes)
+                start = size - Number(endStr);
+                end = size - 1;
+            } else if (startStr && endStr) {
+                // bytes=100-200
+                start = Number(startStr);
+                end = Number(endStr);
+            }
+
+            // Validate range
+            if (start >= size || end >= size || start > end) {
+                finalHeaders.set("Content-Range", `bytes */${size}`);
+                return new Response(null, { status: 416, headers: finalHeaders });
+            }
+
+            code = 206;
         }
-
-        start = s;
-        end = e < size ? e : size - 1;
-        code = 206;
     }
 
     const length = end - start + 1;
-
     finalHeaders.set("Content-Length", length.toString());
+
     if (code === 206) {
         finalHeaders.set("Content-Range", `bytes ${start}-${end}/${size}`);
     }
@@ -71,11 +90,15 @@ export async function streamFileResponse(
     try {
         const file = await Deno.open(path, { read: true });
 
-        let bytesSent = 0;
-
-        if (start !== 0) {
+        // Seek if necessary
+        if (start > 0) {
             await file.seek(start, Deno.SeekMode.Start);
         }
+
+        // 5. Stream with Cleanup
+        // We use a transform stream to slice the content and ensure the file is closed
+        // on both completion (flush) and client disconnection (cancel).
+        let bytesSent = 0;
 
         const limitedStream = file.readable.pipeThrough(new TransformStream({
             transform(chunk, controller) {
@@ -87,9 +110,8 @@ export async function streamFileResponse(
                 }
 
                 if (chunk.byteLength > remaining) {
-                    const slice = chunk.subarray(0, remaining);
-                    controller.enqueue(slice);
-                    bytesSent += slice.byteLength;
+                    controller.enqueue(chunk.subarray(0, remaining));
+                    bytesSent += remaining;
                     controller.terminate();
                 } else {
                     controller.enqueue(chunk);
@@ -98,22 +120,23 @@ export async function streamFileResponse(
             },
             flush() {
                 file.close();
+            },
+            cancel() {
+                // IMPORTANT: Close file if client disconnects or stream aborts
+                file.close();
             }
         }));
 
-        responseBody = limitedStream;
+        return new Response(limitedStream, {
+            status: code,
+            headers: finalHeaders,
+        });
 
     } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err ?? "");
-        const name = err instanceof Error ? err.name : undefined;
-        if (!msg.includes("Broken pipe") && !msg.includes("aborted") && name !== "AbortError") {
-            console.error(`[${logPrefix}] stream error`, err);
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!msg.includes("Broken pipe") && !msg.includes("aborted")) {
+            console.error(`[${logPrefix}] Stream error:`, err);
         }
         return null;
     }
-
-    return new Response(responseBody, {
-        status: code,
-        headers: finalHeaders,
-    });
 }

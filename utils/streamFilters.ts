@@ -12,6 +12,7 @@ interface FormatVideoCardOptions {
   age?: number | null;        // days
   grabs?: number | null;      // number of grabs
   message?: string;           // additional message
+  isComplete?: boolean;      // is the NZB complete
 }
 
 export function formatVideoCard(parsed: ParsedFilename | ParsedShow, options: FormatVideoCardOptions = {}) {
@@ -22,6 +23,7 @@ export function formatVideoCard(parsed: ParsedFilename | ParsedShow, options: Fo
     source = 'Usenet',
     age = null,
     grabs = null,
+    isComplete = undefined,
     message = ''
   } = options;
 
@@ -85,6 +87,7 @@ export function formatVideoCard(parsed: ParsedFilename | ParsedShow, options: Fo
   const ageParts = [];
   if (age !== null) ageParts.push(`⏳ ${age} days old`);
   if (grabs !== null) ageParts.push(`🤲 ${grabs} grabs`);
+  if (isComplete !== undefined) ageParts.push(`${isComplete ? '✅ Complete' : ''}`);
   const ageLine = ageParts.join(' ');
 
   // Proxy / source info

@@ -1,54 +1,56 @@
 import { streamFileResponse } from "../utils/streamFileResponse.ts";
-import { resolve } from "@std/path/posix";
+import { join } from "@std/path";
 import { FAILURE_VIDEO_FILENAME } from "../env.ts";
 
-const FAILURE_VIDEO_PATH = resolve(
+const FAILURE_VIDEO_PATH = join(
     Deno.cwd(),
     "public",
     "assets",
     FAILURE_VIDEO_FILENAME
 );
 
-async function safeStat(filePath: string): Promise<Deno.FileInfo | null> {
+export async function streamFailureVideo(
+    req: Request,
+    failureError?: unknown
+): Promise<Response | null> {
+    let stats: Deno.FileInfo;
+
     try {
-        return await Deno.stat(filePath);
+        stats = await Deno.stat(FAILURE_VIDEO_PATH);
     } catch (error) {
         if (error instanceof Deno.errors.NotFound) {
+            console.error(
+                `[FAILURE STREAM] Video not found: ${FAILURE_VIDEO_PATH}`
+            );
             return null;
         }
-        throw error;
-    }
-}
-
-export async function streamFailureVideo(req: Request, failureError?: any): Promise<Response | null> {
-
-    const stats = await safeStat(FAILURE_VIDEO_PATH);
-    if (!stats || !stats.isFile) {
-        console.error(
-            `[FAILURE STREAM] Failure video not found at ${FAILURE_VIDEO_PATH}`
-        );
+        console.error(`[FAILURE STREAM] Stat error:`, error);
         return null;
     }
 
-    const emulateHead = req.method.toUpperCase() === "HEAD";
-    const failureMessage =
-        failureError?.failureMessage ||
-        failureError?.message ||
-        "NZBDav download failed";
+    if (!stats.isFile) return null;
 
-    const failureHeaders = new Headers();
-    failureHeaders.set("X-NZBDav-Failure", failureMessage);
-    failureHeaders.set("Access-Control-Allow-Origin", "*");
+    const failureMessage =
+        (typeof failureError === "object" &&
+            failureError !== null &&
+            ("failureMessage" in failureError || "message" in failureError)
+            ? (failureError as any).failureMessage || (failureError as any).message
+            : null) || "NZBDav download failed";
+
+    const failureHeaders = new Headers({
+        "X-NZBDav-Failure": String(failureMessage),
+        "Access-Control-Allow-Origin": "*",
+    });
 
     console.warn(
-        `[FAILURE STREAM] Serving fallback video due to NZBDav failure: ${failureMessage}`
+        `[FAILURE STREAM] Serving fallback video: ${failureMessage}`
     );
 
     try {
         return await streamFileResponse(
             req,
             FAILURE_VIDEO_PATH,
-            emulateHead,
+            req.method === "HEAD",
             "FAILURE STREAM",
             stats,
             failureHeaders

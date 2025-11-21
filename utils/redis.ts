@@ -3,75 +3,95 @@ import { REDIS_URL } from "../env.ts";
 
 export const redis = new Redis(REDIS_URL);
 
-/**
- * Sets a JSON value at a specific path in RedisJSON, with an optional expiration.
- * @param redisClient The Redis client instance.
- * @param key The Redis key to store the JSON in.
- * @param path The JSONPath to set the value (e.g., '$' for the root, '$.field').
- * @param data The data object/value to store.
- * @param expirationSeconds Optional TTL for the key in seconds.
- */
+// --- Event Listeners ---
+redis.on("error", (err) => console.error("[Redis] Error:", err));
+redis.on("connect", () => console.log("[Redis] Connected"));
+redis.on("ready", () => console.log("[Redis] Ready"));
+redis.on("reconnecting", () => console.log("[Redis] Reconnecting..."));
+redis.on("close", () => console.warn("[Redis] Connection closed"));
 
-export async function setJsonValue(
+/**
+ * Sets a JSON value at a specific path in RedisJSON using a pipeline for efficiency.
+ * @param key The Redis key.
+ * @param path The JSONPath (e.g. '$' or '$.field').
+ * @param data The data to store.
+ * @param expirationSeconds Optional TTL in seconds.
+ * @param mode Optional 'NX' (only set if not exists) or 'XX' (only set if exists).
+ */
+export async function setJsonValue<T>(
     key: string,
     path: string,
-    data: any,
+    data: T,
     expirationSeconds?: number,
     mode?: 'NX' | 'XX'
 ): Promise<boolean> {
-    const stringifiedData = JSON.stringify(data);
+    try {
+        const pipeline = redis.pipeline();
+        const args = [key, path, JSON.stringify(data)];
+        if (mode) args.push(mode);
 
-    const jsonSetArgs = [key, path, stringifiedData];
-    if (mode) jsonSetArgs.push(mode);
+        // 1. Queue JSON.SET
+        pipeline.call("JSON.SET", ...args);
 
-    const result = await redis.call('JSON.SET', ...jsonSetArgs);
+        // 2. Queue EXPIRE if needed
+        if (expirationSeconds && expirationSeconds > 0) {
+            pipeline.expire(key, expirationSeconds);
+        }
 
-    const wasSet = result === 'OK';
+        // Execute both in one round-trip
+        const results = await pipeline.exec();
+        if (!results) return false;
 
-    if (wasSet && expirationSeconds && expirationSeconds > 0) await redis.expire(key, expirationSeconds);
+        // Check result of JSON.SET (index 0)
+        // ioredis pipeline result format: [[error, result], [error, result]]
+        const [err, response] = results[0];
 
-    return wasSet;
+        if (err) throw err;
+        return response === "OK";
+
+    } catch (err) {
+        console.error(`[Redis] Failed to set JSON for ${key}:`, err);
+        return false;
+    }
 }
 
 /**
  * Gets and parses a JSON value from a specific path in RedisJSON.
- * Defaults to the root path '$'.
- * @param key The Redis key containing the JSON.
- * @param path The JSONPath to retrieve the value from (defaults to '$').
- * @returns The parsed value of type T or null if the key/path doesn't exist or parsing fails.
+ * Automatically unwraps the array format that RedisJSON returns for path queries.
  */
 export async function getJsonValue<T>(
     key: string,
     path: string = '$'
 ): Promise<T | null> {
     try {
-        const result = await redis.call('JSON.GET', key, path);
-        if (result === null || result === undefined) return null;
+        const result = await redis.call('JSON.GET', key, path) as string | null;
+        if (!result) return null;
 
-        const jsonString = typeof result === 'string' ? result : result.toString();
-        if (!jsonString) return null;
+        const parsed = JSON.parse(result);
 
-        const parsed = JSON.parse(jsonString);
-        return (path.includes('$') && Array.isArray(parsed) ? parsed[0] : parsed) as T;
+        // RedisJSON `JSON.GET key path` returns an array [value].
+        // We unwrap it to return the direct value T.
+        if (Array.isArray(parsed)) {
+            return parsed.length > 0 ? parsed[0] as T : null;
+        }
+
+        return parsed as T;
     } catch (e) {
-        console.error(`[RedisJSON Helper] Failed to parse JSON for key ${key} at path ${path}.`, e);
+        console.error(`[Redis] Failed to parse JSON for key ${key} at path ${path}.`, e);
         return null;
     }
 }
 
 /**
- * Deletes a specific path within a JSON document using JSON.DEL.
- * This is crucial for removing 'fail_status' without deleting the entire metadata.
- * @param key The Redis key containing the JSON document.
- * @param path The JSON path to delete (e.g., '$.fail_status').
- * @returns 1 if the path was deleted, 0 otherwise.
+ * Deletes a specific path within a JSON document.
+ * @returns The number of paths deleted (usually 1 or 0).
  */
 export async function deleteJsonPath(key: string, path: string): Promise<number> {
     try {
-        const deletedCount = await redis.call("JSON.del", key, path) as number;
-        return deletedCount;
+        const result = await redis.call("JSON.DEL", key, path);
+        return Number(result);
     } catch (e) {
-        console.error("Error deleting Redis JSON path:", e);
+        console.error(`[Redis] Error deleting path ${path} in ${key}:`, e);
         return 0;
     }
 }
