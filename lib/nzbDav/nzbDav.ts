@@ -206,7 +206,7 @@ async function waitForNzbdavHistorySlot(
     while (Date.now() < deadline) {
         const json = await fetchNzbdav("history", {
             start: "0",
-            limit: "1",
+            limit: "100",
             category: category,
             nzo_ids: nzoId,
         }, NZBDAV_HISTORY_TIMEOUT_MS || NZBDAV_POLL_INTERVAL_MS);
