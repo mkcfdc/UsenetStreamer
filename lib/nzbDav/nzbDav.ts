@@ -292,9 +292,9 @@ async function buildNzbdavStream(params: {
         return result;
     }
 
-    // 3. Proxy Download (Add to NZBDav) Nzbdav is updated to follow redirects
-    //const proxyUrl = `${ADDON_BASE_URL}/nzb/proxy/${md5(downloadUrl)}.nzb`;
-    const { nzoId } = await addNzbToNzbdav(downloadUrl, category, title);
+    // 3. Proxy Download (Add to NZBDav) 
+    const proxyUrl = `${ADDON_BASE_URL}/nzb/proxy/${md5(downloadUrl)}.nzb`;
+    const { nzoId } = await addNzbToNzbdav(proxyUrl, category, title);
 
     // 4. Wait for completion
     const slot = await waitForNzbdavHistorySlot(nzoId, category, downloadUrl);
