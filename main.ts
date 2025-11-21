@@ -160,6 +160,9 @@ async function handler(req: Request): Promise<Response> {
                 r.cache_hit = status?.cache_hit ?? false;
                 r.last_updated = status?.last_updated ?? null;
 
+                // strip out the result if it is r.is_complete === false
+                if (r.is_complete === false) continue;
+
                 // Format
                 const parsed = parseRelease(r.title, type === "series");
                 const { resolution, lines } = formatVideoCard(parsed, {

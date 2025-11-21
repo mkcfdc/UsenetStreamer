@@ -87,7 +87,7 @@ export function formatVideoCard(parsed: ParsedFilename | ParsedShow, options: Fo
   const ageParts = [];
   if (age !== null) ageParts.push(`⏳ ${age} days old`);
   if (grabs !== null) ageParts.push(`🤲 ${grabs} grabs`);
-  if (isComplete !== undefined) ageParts.push(`${isComplete ? '✅ Complete' : ''}`);
+  if (isComplete !== undefined) ageParts.push(`${isComplete === true ? '✅ Complete' : isComplete === false ? '❌ Incomplete' : ''}`);
   const ageLine = ageParts.join(' ');
 
   // Proxy / source info
