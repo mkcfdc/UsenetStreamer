@@ -8,7 +8,6 @@
     "@std/media-types": "jsr:@std/media-types@^1.1.0",
     "@std/path": "jsr:@std/path@^1.1.2",
     "@takker/md5": "jsr:@takker/md5@^0.1.0",
-    "fast-xml-parser": "npm:fast-xml-parser@^5.3.2",
     "ioredis": "npm:ioredis@^5.8.2",
     "lru-cache": "npm:lru-cache@^11.2.2"
   }

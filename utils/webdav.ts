@@ -1,4 +1,3 @@
-import { XMLParser } from "fast-xml-parser";
 import {
     NZBDAV_WEBDAV_USER,
     NZBDAV_WEBDAV_PASS,
@@ -33,47 +32,20 @@ function getRemoteURL(): string {
     return root ? `${base}/${root}` : base;
 }
 
-// Types for the raw XML structure after parsing
-type XmlPropStat = {
-    status: string;
-    prop?: {
-        resourcetype?: { collection?: string } | string;
-        getcontentlength?: number;
-        getcontenttype?: string;
-        getlastmodified?: string;
-    };
-};
-
-type XmlResponse = {
-    href: string;
-    propstat: XmlPropStat | XmlPropStat[];
-};
-
-type XmlResult = {
-    multistatus?: {
-        response?: XmlResponse | XmlResponse[];
-    };
-};
+/**
+ * Minimalistic XML helper to extract content between tags.
+ * Handles namespaces (e.g. <d:href> or <D:href> or <href>)
+ */
+function getTagValue(xml: string, tagName: string): string | null {
+    // Matches <prefix:tagName>VALUE</prefix:tagName> or <tagName>VALUE</tagName>
+    // \s\S captures newlines
+    const regex = new RegExp(`<([a-zA-Z0-9_]+:)?${tagName}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/([a-zA-Z0-9_]+:)?${tagName}>`, "i");
+    const match = xml.match(regex);
+    return match ? match[2] : null;
+}
 
 export function getWebdavClient(): WebdavClient {
     if (client) return client;
-
-    // Configure parser to remove namespaces (d:href -> href) and force arrays for list items
-    interface ParserOptions {
-        removeNSPrefix: boolean;
-        ignoreAttributes: boolean;
-        parseTagValue: boolean;
-        isArray: (name: string, jpath?: string, isLeafNode?: boolean) => boolean;
-    }
-
-    const parserOptions: ParserOptions = {
-        removeNSPrefix: true,
-        ignoreAttributes: true,
-        parseTagValue: true, // Auto-convert numbers/booleans
-        isArray: (name: string) => name === "response" || name === "propstat",
-    };
-
-    const parser: XMLParser = new XMLParser(parserOptions);
 
     client = {
         getDirectoryContents: async (directory: string) => {
@@ -92,29 +64,29 @@ export function getWebdavClient(): WebdavClient {
             });
 
             if (!res.ok && res.status !== 207) {
-                await res.text(); // consume body
+                await res.text();
                 throw new Error(`WebDAV PROPFIND failed: ${res.status} ${res.statusText}`);
             }
 
             const xml = await res.text();
-
-            // Parse XML to JSON Object
-            const result = parser.parse(xml) as XmlResult;
-
-            // Safely access the response array
-            const responses = result.multistatus?.response;
-
-            if (!responses) return [];
-
-            // Ensure it is an array (handles single file case)
-            const responseList = Array.isArray(responses) ? responses : [responses];
             const entries: WebdavEntry[] = [];
 
-            for (const resp of responseList) {
-                const href = decodeURIComponent(resp.href || "");
+            // 1. Match all <response> blocks
+            // We use a global regex with exec loop to find all occurrences
+            const responseRegex = /<([a-zA-Z0-9_]+:)?response(?:[\s\S]*?)>([\s\S]*?)<\/\1?response>/gi;
 
-                // Normalize propstat to array
-                const propstats = Array.isArray(resp.propstat) ? resp.propstat : [resp.propstat];
+            let respMatch;
+            while ((respMatch = responseRegex.exec(xml)) !== null) {
+                const responseBody = respMatch[2]; // Content inside <response>
+
+                // 2. Extract href
+                const hrefRaw = getTagValue(responseBody, "href");
+                if (!hrefRaw) continue;
+                const href = decodeURIComponent(hrefRaw);
+
+                // 3. Parse propstats
+                // We must find the propstat block that has a status of 200 OK
+                const propstatRegex = /<([a-zA-Z0-9_]+:)?propstat(?:[\s\S]*?)>([\s\S]*?)<\/\1?propstat>/gi;
 
                 let isDirectory = false;
                 let size: number | null = null;
@@ -122,39 +94,45 @@ export function getWebdavClient(): WebdavClient {
                 let lastModified: string | null = null;
                 let statusOk = false;
 
-                for (const ps of propstats) {
-                    // Check strictly for 200 OK (WebDAV often returns 404 propstats mixed in)
-                    if (!ps.status || !ps.status.includes("200")) continue;
+                let psMatch;
+                while ((psMatch = propstatRegex.exec(responseBody)) !== null) {
+                    const psBody = psMatch[2];
+
+                    // Check status
+                    const status = getTagValue(psBody, "status");
+                    if (!status || !status.includes("200")) {
+                        continue;
+                    }
 
                     statusOk = true;
-                    const prop = ps.prop;
-                    if (!prop) continue;
 
-                    // Check resource type
-                    if (prop.resourcetype) {
-                        // Empty tag <resourcetype/> means file, <resourcetype><collection/></resourcetype> means folder
-                        // fast-xml-parser usually treats empty tag as empty string, or checks existence of key inside
-                        if (typeof prop.resourcetype === 'object' && 'collection' in prop.resourcetype) {
-                            isDirectory = true;
-                        }
+                    // Extract props from this successful block
+                    const propBody = getTagValue(psBody, "prop");
+                    if (!propBody) continue;
+
+                    // Check isDirectory: look for <resourcetype> containing <collection/>
+                    const resType = getTagValue(propBody, "resourcetype");
+                    if (resType && /<([a-zA-Z0-9_]+:)?collection\b/i.test(resType)) {
+                        isDirectory = true;
                     }
 
-                    if (prop.getcontentlength !== undefined) {
-                        size = Number(prop.getcontentlength);
-                    }
+                    // Size
+                    const len = getTagValue(propBody, "getcontentlength");
+                    if (len) size = Number(len);
 
-                    if (prop.getcontenttype) {
-                        contentType = String(prop.getcontenttype);
-                    }
+                    // Content Type
+                    const type = getTagValue(propBody, "getcontenttype");
+                    if (type) contentType = type;
 
-                    if (prop.getlastmodified) {
-                        lastModified = String(prop.getlastmodified);
-                    }
+                    // Last Modified
+                    const mod = getTagValue(propBody, "getlastmodified");
+                    if (mod) lastModified = mod;
                 }
 
                 if (!statusOk) continue;
 
-                // Extract name
+                // Determine name from href
+                // Remove trailing slash for name extraction
                 const name = href.replace(/\/+$/, "").split("/").pop() || "";
 
                 entries.push({
@@ -167,11 +145,13 @@ export function getWebdavClient(): WebdavClient {
                 });
             }
 
+            // Filter out the parent folder itself
             const requestPath = new URL(url).pathname.replace(/\/+$/, "");
 
             return entries.filter(e => {
                 const entryHref = e.href.replace(/\/+$/, "");
-                return entryHref !== decodeURIComponent(requestPath);
+                // Decode again just in case strict comparison fails on encoded chars
+                return decodeURIComponent(entryHref) !== decodeURIComponent(requestPath);
             });
         },
     };
