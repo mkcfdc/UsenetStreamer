@@ -7,7 +7,8 @@
 UsenetStreamer is a Stremio addon that bridges Prowlarr and NZBDav. It hosts no
 media itself; it simply orchestrates search and streaming through your existing
 Usenet stack. The addon searches Usenet indexers via Prowlarr, queues NZB
-downloads in NZBDav, and exposes the resulting media as Stremio streams.
+downloads in NZBDav or altMount, and exposes the resulting media as Stremio
+streams.
 
 ### This Version uses Deno. Not Node.
 
@@ -38,6 +39,8 @@ downloads in NZBDav, and exposes the resulting media as Stremio streams.
     [`More information about nzbcheck API`](docs/NzbCheck_Api.md)
 14. Can now work with NzbHydra2. Needs NZBHYDRA_URL & NZBHYDRA_API_KEY
     environment variables.
+15. No need for external webdav module. Reducing dependancies done to the bare
+    minimum!
 
 ### How to use nzbcheck.filmwhisper.dev:
 
