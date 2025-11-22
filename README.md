@@ -1,6 +1,8 @@
 # UsenetStreamer
 
-![UsenetStreamer logo](public/assets/icon.png)
+<p align="center">
+  <img src="assets/icon.png" alt="UsenetStreamer logo" width="180" />
+</p>
 
 UsenetStreamer is a Stremio addon that bridges Prowlarr and NZBDav. It hosts no
 media itself; it simply orchestrates search and streaming through your existing
@@ -141,7 +143,7 @@ docker run -d \
    -e NZBDAV_WEBDAV_PASS=webdav-password \
    -e ADDON_BASE_URL=https://myusenet.duckdns.org \
    -e ADDON_SHARED_SECRET=your-secret \
-   ghcr.io/sanket9225/usenetstreamer:latest
+   ghcr.io/mkcfdc/usenetstreamer:latest
 ```
 
 If you prefer to keep secrets in a file, use
@@ -152,15 +154,10 @@ If you prefer to keep secrets in a file, use
 
 ## Environment Variables
 
-- `PROWLARR_URL`, `PROWLARR_API_KEY`, `PROWLARR_STRICT_ID_MATCH`
+- `PROWLARR_URL`, `PROWLARR_API_KEY`,
 - `NZBDAV_URL`, `NZBDAV_API_KEY`, `NZBDAV_WEBDAV_URL`, `NZBDAV_WEBDAV_USER`,
   `NZBDAV_WEBDAV_PASS`
 - `ADDON_BASE_URL` `ADDON_SHARED_SECRET`
-
-`PROWLARR_STRICT_ID_MATCH` defaults to `false`. Set it to `true` if you want
-strictly ID-based searches (IMDb/TVDB/TMDB only). This usually yields faster,
-more precise matches but many indexers do not support ID queries, so you will
-receive fewer total results.
 
 `ADDON_SHARED_SECRET` is your API Key.
 
@@ -207,3 +204,9 @@ Tips:
 - Finally, add `https://myusenet.duckdns.org/<SHARED_SECRET>/manifest.json`
   (replace with your domain) to Stremio’s addon catalog. Use straight HTTPS—the
   addon will not show up over HTTP.
+
+  ### Project Dependencies
+  - ['altMount'](https://github.com/javi11/altmount)
+  - ['nzbDav'](https://github.com/nzbdav-dev/nzbdav)
+  - ['Prowlarr'](https://github.com/Prowlarr/Prowlarr)
+  - ['nzbHydra2'](https://github.com/theotherp/nzbhydra2)

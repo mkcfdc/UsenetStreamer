@@ -1,4 +1,4 @@
-import type { ProwlarrResult } from "../utils/getMediaAndSearchResults.ts";
+import type { SearchResult } from "../utils/getMediaAndSearchResults.ts";
 
 const NZB_CHECK_URL = Deno.env.get("NZB_CHECK_URL");
 const NZB_CHECK_API_KEY = Deno.env.get("NZB_CHECK_API_KEY");
@@ -8,7 +8,7 @@ interface NzbCheckItem {
     file_id: string;
 }
 
-interface NZBCheckCache extends ProwlarrResult {
+interface NZBCheckCache extends SearchResult {
     is_complete: boolean | null;
     cache_hit: boolean;
     last_updated: string | null;
