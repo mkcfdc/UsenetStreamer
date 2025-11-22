@@ -264,7 +264,6 @@ async function handler(req: Request): Promise<Response> {
         }
     }
 
-    // --- NZB FILE PROXY ---
     const proxyMatch = PATTERNS.nzbProxy.exec(url);
     if (proxyMatch && method === "GET") {
         const { hash } = proxyMatch.pathname.groups;
@@ -272,7 +271,6 @@ async function handler(req: Request): Promise<Response> {
         const resolvedKey = `${redisKey}:resolved`;
 
         try {
-            // 1. Get Data from Redis
             const dataRaw = await redis.call("JSON.GET", redisKey, "$");
             const data = parseRedisJson<{ downloadUrl?: string }>(dataRaw);
 
@@ -280,35 +278,43 @@ async function handler(req: Request): Promise<Response> {
                 return new Response("Unknown NZB hash or invalid record", { status: 404 });
             }
 
-            // 2. Resolve Redirects (Prowlarr usually redirects to the indexer)
-            let resolvedUrl = await redis.get(resolvedKey);
+            let finalResponse: Response;
+            const cachedResolvedUrl = await redis.get(resolvedKey);
 
-            if (!resolvedUrl) {
-                const resp = await fetch(data.downloadUrl, { redirect: "manual" });
-                if (![301, 302].includes(resp.status)) {
-                    return new Response(`Unexpected Prowlarr status: ${resp.status}`, { status: 500 });
+            if (cachedResolvedUrl) {
+                finalResponse = await fetch(cachedResolvedUrl);
+            } else {
+                const probeResp = await fetch(data.downloadUrl, { redirect: "manual" });
+
+                if ([301, 302].includes(probeResp.status)) {
+                    const location = probeResp.headers.get("location");
+                    if (!location) return new Response("Redirect missing Location header", { status: 500 });
+                    await redis.setex(resolvedKey, 21600, location);
+
+                    finalResponse = await fetch(location);
+
+                } else if (probeResp.status === 200) {
+                    finalResponse = probeResp;
+                    await redis.setex(resolvedKey, 21600, data.downloadUrl);
+
+                } else {
+                    return new Response(`Unexpected upstream status: ${probeResp.status}`, { status: 502 });
                 }
-
-                resolvedUrl = resp.headers.get("location");
-                if (!resolvedUrl) return new Response("Redirect missing Location header", { status: 500 });
-
-                await redis.setex(resolvedKey, 21600, resolvedUrl);
             }
 
-            // 3. Fetch Actual NZB
-            const nzbResp = await fetch(resolvedUrl);
-            if (!nzbResp.ok) {
-                if (nzbResp.status === 404) await redis.del(resolvedKey); // Clear bad cache
-                return new Response(await nzbResp.text(), { status: nzbResp.status });
+            if (!finalResponse.ok) {
+                if (finalResponse.status === 404) await redis.del(resolvedKey);
+                return new Response(await finalResponse.text(), { status: finalResponse.status });
             }
 
-            // 4. Serve NZB
-            const headers = new Headers(nzbResp.headers);
+            const headers = new Headers(finalResponse.headers);
             headers.set("Content-Disposition", `attachment; filename="${hash}.nzb"`);
-            // Ensure correct content type
-            if (!headers.get("content-type")) headers.set("Content-Type", "application/x-nzb");
 
-            return new Response(nzbResp.body, { headers });
+            if (!headers.get("content-type") || headers.get("content-type") === "application/octet-stream") {
+                headers.set("Content-Type", "application/x-nzb");
+            }
+
+            return new Response(finalResponse.body, { headers });
 
         } catch (err) {
             console.error("[NZB Proxy] Error:", err);
