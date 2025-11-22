@@ -32,7 +32,7 @@ downloads in NZBDav, and exposes the resulting media as Stremio streams.
     just added metadata stored on the actual system. But using .strm will make
     use of altMount's streaming functionality, testing continues.
 13. Created an Open API for checking nzb files. This does not put any added
-    pressure on the Usenet servers or your Indexer API calls.
+    pressure on the Usenet servers or your Indexer API calls. [`More information about nzbcheck API`](docs/NzbCheck_Api.md)
 
 ### How to use nzbcheck.filmwhisper.dev:
 
@@ -73,7 +73,8 @@ worth it.
 1. Only works with Prowlarr so far since that's what I've always used and that's
    how @Sanket9225 originally released.
 2. No nzb Triage done to files. This increases hits to indexer api's by a ton.
-   Just have to deal with the fails.
+   I have moved to an external and open api to do this check. It works very well and is super fast.
+   I recommend other forks use it too so we can all take advantage! [`More information about nzbcheck API`](docs/NzbCheck_Api.md)
 
 ### Running stats
 
