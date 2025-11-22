@@ -1,6 +1,13 @@
 import { getJsonValue, setJsonValue } from "./redis.ts";
 import { getCinemetaData } from "../lib/cinemeta.ts";
+import { searchHydra } from "../lib/nzbhydra.ts";
 import { searchProwlarr } from "../lib/prowlarr.ts";
+import {
+    NZBHYDRA_URL,
+    NZBHYDRA_API_KEY,
+    PROWLARR_URL,
+    PROWLARR_API_KEY
+} from "../env.ts";
 
 interface RequestedEpisode {
     imdbid?: string;
@@ -15,8 +22,7 @@ interface CinemetaData {
     tmdbId?: string;
 }
 
-
-export interface ProwlarrResult {
+export interface SearchResult {
     guid: string | null;
     fileId?: string;
     title: string;
@@ -27,6 +33,7 @@ export interface ProwlarrResult {
     indexer?: string;
     age?: number;
     grabs?: number;
+    protocol?: string;
 }
 
 const CINEMETA_CACHE_TTL = 86400 * 7;
@@ -34,15 +41,11 @@ const PROWLARR_SEARCH_CACHE_TTL = 86400; // 1 day
 
 /**
  * Fetches media metadata and search results, utilizing Redis for caching both API calls.
- * * @param type The media type (must be 'movie' or 'series').
- * @param imdbId The IMDb ID of the media (e.g., "tt0088763").
- * @param requestedEpisode Optional season/episode data for TV series.
- * @returns An object containing the Cinemeta data and combined Prowlarr search results.
  */
 export async function getMediaAndSearchResults(
     type: 'movie' | 'series',
     episodeInfo: RequestedEpisode
-): Promise<{ cinemetaData: CinemetaData; results: ProwlarrResult[] }> {
+): Promise<{ cinemetaData: CinemetaData; results: SearchResult[] }> {
 
     const { imdbid: imdbId, season, episode } = episodeInfo;
 
@@ -51,29 +54,25 @@ export async function getMediaAndSearchResults(
 
     if (!cinemetaData) {
         console.log(`[Cache] Cinemeta miss for ${cinemetaKey}`);
-
         const fetchedData = await getCinemetaData(type, imdbId);
         cinemetaData = fetchedData as CinemetaData;
 
-        await setJsonValue(
-            cinemetaKey,
-            '$',
-            cinemetaData,
-            CINEMETA_CACHE_TTL
-        );
+        await setJsonValue(cinemetaKey, '$', cinemetaData, CINEMETA_CACHE_TTL);
     }
 
     const { name: showName, year, tvdbId, tmdbId } = cinemetaData!;
 
+    // --- 2. Check Search Cache ---
     const searchKey = episode && season
-        ? `prowlarr:search:${imdbId}:${season}:${episode}`
-        : `prowlarr:search:${imdbId}`;
-    let results: ProwlarrResult[] | null = await getJsonValue<ProwlarrResult[]>(searchKey);
+        ? `search:${imdbId}:${season}:${episode}`
+        : `search:${imdbId}`;
+
+    let results: SearchResult[] | null = await getJsonValue<SearchResult[]>(searchKey);
 
     if (!results) {
-        console.log(`[Cache] Prowlarr search miss for ${searchKey}`);
+        console.log(`[Cache] Search miss for ${searchKey} (Provider lookup needed)`);
 
-        results = await searchProwlarr({
+        const searchOptions = {
             imdbId,
             tvdbId,
             tmdbId,
@@ -83,11 +82,46 @@ export async function getMediaAndSearchResults(
             limit: 50,
             season,
             episode,
-        });
+        };
 
-        // @TODO: do the filtering here so we don't save the full prowlarr results to cache....
+        let rawResults: SearchResult[] = [];
 
+        if (NZBHYDRA_URL && NZBHYDRA_API_KEY) {
+            console.log(`[Search] Using Provider: NZBHydra2`);
+            const hydraResults = await searchHydra(searchOptions);
 
+            rawResults = hydraResults.map(h => ({
+                guid: h.guid,
+                title: h.title,
+                downloadUrl: h.downloadUrl,
+                size: h.size,
+                indexer: h.indexer,
+                age: h.age,
+                protocol: "usenet",
+                fileName: h.title
+            }));
+
+            // PRIORITY 2: Prowlarr
+        } else if (PROWLARR_URL && PROWLARR_API_KEY) {
+            console.log(`[Search] Using Provider: Prowlarr`);
+            const prowlarrResults = await searchProwlarr(searchOptions);
+
+            rawResults = prowlarrResults as SearchResult[];
+
+        } else {
+            console.warn(`[Search] No search provider configured (Hydra or Prowlarr)`);
+            rawResults = [];
+        }
+
+        results = rawResults.map(r => ({
+            guid: r.guid,
+            title: r.title,
+            downloadUrl: r.downloadUrl,
+            size: r.size,
+            indexer: r.indexer,
+            age: r.age,
+            protocol: r.protocol || 'usenet'
+        }));
 
         await setJsonValue(
             searchKey,

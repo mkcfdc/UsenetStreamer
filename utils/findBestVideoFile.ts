@@ -68,17 +68,9 @@ async function findStrmCandidate({ category, jobName }: FindFileParams): Promise
 
             if (!pathParam) continue;
 
-            // Construct the external view path
-            // Removing /sabnzbd from the base URL if present to form the base public URL
             const publicBaseUrl = NZBDAV_URL.replace(/\/sabnzbd\/?$/, "");
-            // Replace localhost reference from STRM generator with actual public base
             const viewPath = urlStr.replace("http://localhost:8080", publicBaseUrl);
             const fileName = pathParam.split("/").pop() || entry.name;
-
-            // Note: We don't know the exact file size of the target here easily without a HEAD request,
-            // so we default to a placeholder or 0 if not critical, or the strm file size.
-            // The original code used directory size? Assuming statInfo from dir, but that's wrong for file size.
-            // We will just use 0 or a dummy value as STRM usually implies direct playback validity.
 
             return {
                 viewPath,
@@ -145,10 +137,6 @@ async function findWebdavCandidate({ category, jobName, requestedEpisode }: Find
                 absolutePath: fullEntryPath,
                 viewPath: fullEntryPath.replace(/^\/+/, ""), // Remove leading slashes for view path
             };
-
-            // Logic:
-            // 1. Prioritize Episode Match: Largest file that matches specific SxxExx
-            // 2. Fallback: Largest video file found generally (Main Movie or if detection fails)
 
             if (matchesEpisode) {
                 if (!bestEpisodeMatch || candidate.size > bestEpisodeMatch.size) {
