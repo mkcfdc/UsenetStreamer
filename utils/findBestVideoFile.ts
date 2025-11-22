@@ -1,5 +1,5 @@
 import { extname } from "@std/path/posix";
-import { normalizeNzbdavPath, listWebdavDirectory, type WebdavEntry } from "./webdav.ts";
+import { normalizeNzbdavPath, getWebdavClient, type WebdavEntry } from "./webdav.ts";
 import { NZBDAV_MAX_DIRECTORY_DEPTH, NZBDAV_URL, NZBDAV_VIDEO_EXTENSIONS, USE_STRM_FILES } from "../env.ts";
 
 interface FileCandidate {
@@ -109,7 +109,8 @@ async function findWebdavCandidate({ category, jobName, requestedEpisode }: Find
 
         let entries: WebdavEntry[];
         try {
-            entries = await listWebdavDirectory(currentPath);
+            const client = getWebdavClient();
+            entries = await client.getDirectoryContents(currentPath);
         } catch {
             // Silent fail for navigation errors, just skip this path
             continue;

@@ -13,7 +13,6 @@ import {
     USE_STRM_FILES,
 } from "../../env.ts";
 import { streamFailureVideo } from "../streamFailureVideo.ts";
-import { getWebdavClient } from "../../utils/webdav.ts";
 
 
 const httpClient = Deno.createHttpClient({
@@ -31,13 +30,10 @@ function sanitizeFileName(file: string) {
     return file.replace(/[\\/:*?"<>|]+/g, "_") || "stream";
 }
 
-async function cleanupOnError(viewPath: string, reason: string) {
+function cleanupOnError(viewPath: string, reason: string) {
     console.warn(`[NZBDAV] Stream failure cleanup: ${reason}`);
     try {
-        const webdav = await getWebdavClient();
-        const viewPathFolder = viewPath.substring(0, viewPath.lastIndexOf("/"));
-        await webdav.deleteFile(viewPathFolder, { recursive: true });
-        console.log(`[NZBDAV] Deleted folder: ${viewPathFolder}`);
+        console.log(`[NZBDAV] Deleted folder: ${viewPath}`);
     } catch (err) {
         console.error(`[NZBDAV] Failed to clean up folder:`, err);
     }
