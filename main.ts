@@ -2,7 +2,7 @@
 import { join } from "@std/path/posix";
 import { getMediaAndSearchResults } from "./utils/getMediaAndSearchResults.ts";
 
-import { ADDON_BASE_URL, PORT, } from "./env.ts";
+import { ADDON_BASE_URL, NZBHYDRA_API_KEY, NZBHYDRA_URL, PORT, } from "./env.ts";
 import { md5 } from "./utils/md5Encoder.ts";
 import { streamNzbdavProxy } from "./lib/nzbDav/nzbDav.ts";
 import { parseRequestedEpisode } from "./utils/parseRequestedEpisode.ts";
@@ -343,6 +343,12 @@ function getResolutionIcon(resolution: string): string {
 
 function extractGuidFromUrl(urlString: string): string | undefined {
     try {
+
+        if (NZBHYDRA_URL && NZBHYDRA_API_KEY) {
+            // we are using hydra, just return urlString;
+            return urlString;
+        }
+
         const url = new URL(urlString);
 
         // 1. Check if it's a Query Parameter (NZBGeek style: ?guid=...)
