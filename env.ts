@@ -3,11 +3,11 @@ export const ADDON_BASE_URL = Deno.env.get("ADDON_BASE_URL") || '';
 if (!ADDON_BASE_URL) throw new Error("Need ADDON_BASE_URL");
 export const PORT = Number(Deno.env.get("PORT") || "7000");
 
-export const PROWLARR_URL = String(Deno.env.get("PROWLARR_URL"));
-export const PROWLARR_API_KEY = String(Deno.env.get("PROWLARR_API_KEY"));
+export const PROWLARR_URL = Deno.env.get("PROWLARR_URL");
+export const PROWLARR_API_KEY = Deno.env.get("PROWLARR_API_KEY");
 
-export const NZBHYDRA_API_KEY = String(Deno.env.get("NZBHYDRA_API_KEY"));
-export const NZBHYDRA_URL = String(Deno.env.get("NZBHYDRA_URL"));
+export const NZBHYDRA_API_KEY = Deno.env.get("NZBHYDRA_API_KEY");
+export const NZBHYDRA_URL = Deno.env.get("NZBHYDRA_URL");
 
 if ((!NZBHYDRA_URL || !NZBHYDRA_API_KEY) && (!PROWLARR_URL || !PROWLARR_API_KEY)) {
     throw new Error("Either NZBHYDRA_URL and NZBHYDRA_API_KEY or PROWLARR_URL and PROWLARR_API_KEY are required!");

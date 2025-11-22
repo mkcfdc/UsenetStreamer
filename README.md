@@ -75,9 +75,7 @@ worth it.
 
 ### Features missing in this version:
 
-1. Only works with Prowlarr so far since that's what I've always used and that's
-   how @Sanket9225 originally released.
-2. No nzb Triage done to files. This increases hits to indexer api's by a ton. I
+1. No nzb Triage done to files. This increases hits to indexer api's by a ton. I
    have moved to an external and open api to do this check. It works very well
    and is super fast. I recommend other forks use it too so we can all take
    advantage! [`More information about nzbcheck API`](docs/NzbCheck_Api.md)

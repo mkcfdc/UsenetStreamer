@@ -56,6 +56,8 @@ services:
   redis:
     image: redis:8.2.3-alpine
     container_name: usenet_redis
+    ports:
+      - "6379:6379"
     networks:
       - media
     restart: unless-stopped
