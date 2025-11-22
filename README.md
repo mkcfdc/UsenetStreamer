@@ -1,7 +1,7 @@
 # UsenetStreamer
 
 <p align="center">
-  <img src="assets/icon.png" alt="UsenetStreamer logo" width="180" />
+  <img src="public/assets/icon.png" alt="UsenetStreamer logo" width="180" />
 </p>
 
 UsenetStreamer is a Stremio addon that bridges Prowlarr and NZBDav. It hosts no
