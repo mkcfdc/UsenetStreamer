@@ -2,6 +2,7 @@ import { getJsonValue, setJsonValue } from "./redis.ts";
 import { getCinemetaData } from "../lib/cinemeta.ts";
 import { searchHydra } from "../lib/nzbhydra.ts";
 import { searchProwlarr } from "../lib/prowlarr.ts";
+import { searchDirect } from "../lib/nzbnab.ts";
 import {
     NZBHYDRA_URL,
     NZBHYDRA_API_KEY,
@@ -40,7 +41,11 @@ const CINEMETA_CACHE_TTL = 86400 * 7;
 const PROWLARR_SEARCH_CACHE_TTL = 86400; // 1 day
 
 /**
- * Fetches media metadata and search results, utilizing Redis for caching both API calls.
+ * Fetches media metadata and search results, utilizing Redis for caching.
+ * Priority:
+ * 1. NZBHydra (if ENV vars set)
+ * 2. Prowlarr (if ENV vars set)
+ * 3. Direct/SQLite (Default fallback)
  */
 export async function getMediaAndSearchResults(
     type: 'movie' | 'series',
@@ -49,6 +54,7 @@ export async function getMediaAndSearchResults(
 
     const { imdbid: imdbId, season, episode } = episodeInfo;
 
+    // --- 1. Check Metadata Cache ---
     const cinemetaKey = `cinemeta:${type}:${imdbId}`;
     let cinemetaData: CinemetaData | null = await getJsonValue<CinemetaData>(cinemetaKey);
 
@@ -86,6 +92,7 @@ export async function getMediaAndSearchResults(
 
         let rawResults: SearchResult[] = [];
 
+        // OPTION 1: NZBHydra
         if (NZBHYDRA_URL && NZBHYDRA_API_KEY) {
             console.log(`[Search] Using Provider: NZBHydra2`);
             const hydraResults = await searchHydra(searchOptions);
@@ -101,16 +108,31 @@ export async function getMediaAndSearchResults(
                 fileName: h.title
             }));
 
-            // PRIORITY 2: Prowlarr
+            // OPTION 2: Prowlarr
         } else if (PROWLARR_URL && PROWLARR_API_KEY) {
             console.log(`[Search] Using Provider: Prowlarr`);
             const prowlarrResults = await searchProwlarr(searchOptions);
-
             rawResults = prowlarrResults as SearchResult[];
 
+            // OPTION 3: Direct API (SQLite)
         } else {
-            console.warn(`[Search] No search provider configured (Hydra or Prowlarr)`);
-            rawResults = [];
+            console.log(`[Search] Using Provider: Direct/SQLite`);
+            const directResults = await searchDirect(searchOptions);
+
+            rawResults = directResults.map(r => ({
+                guid: r.guid,
+                title: r.title,
+                downloadUrl: r.downloadUrl,
+                size: r.size,
+                indexer: r.indexer,
+                age: r.age,
+                protocol: "usenet",
+                fileName: r.title
+            }));
+
+            if (rawResults.length === 0) {
+                console.warn(`[Search] No results found via Direct search. (Check 'deno task nzb list' to ensure indexers are added)`);
+            }
         }
 
         results = rawResults.map(r => ({

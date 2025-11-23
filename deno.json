@@ -1,10 +1,13 @@
 {
   "tasks": {
-    "dev": "deno run --allow-env --allow-net --allow-read --env-file=.env main.ts"
+    "dev": "deno run --allow-env --allow-net --allow-read --env-file=.env main.ts",
+    "manage": "deno run --allow-all manage.ts"
   },
   "imports": {
     "@ctrl/video-filename-parser": "npm:@ctrl/video-filename-parser@^5.4.1",
+    "@db/sqlite": "jsr:@db/sqlite@^0.13.0",
     "@libs/xml": "jsr:@libs/xml@^7.0.3",
+    "@std/cli": "jsr:@std/cli@^1.0.24",
     "@std/encoding": "jsr:@std/encoding@^1.0.10",
     "@std/media-types": "jsr:@std/media-types@^1.1.0",
     "@std/path": "jsr:@std/path@^1.1.2",

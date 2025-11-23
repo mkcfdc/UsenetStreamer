@@ -40,5 +40,8 @@ Thumbs.db
 *.bak
 *.tmp
 *.swp
+*.db
+
+nzb_indexers.db
 
 altmount/
