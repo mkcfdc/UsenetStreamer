@@ -13,7 +13,7 @@ const command = args._[0];
 function printUsage() {
     console.log(`
   Usage:
-    deno run -A manage.ts <command> [options]
+    deno task manage <command> [options]
 
   Commands:
     list                Show all configured indexers

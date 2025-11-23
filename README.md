@@ -41,6 +41,10 @@ streams.
     environment variables.
 15. No need for external webdav module. Reducing dependancies done to the bare
     minimum!
+16. No need for Prowlarr or NzbHydra. NzbHydra is a resource hog, and since most
+    sites use the nzbnab standard api, we can direct query each index ourselves.
+    This makes searching instant with 0 overhead.
+    [How to setup direct indexing](docs/manage_cli.md)
 
 ### How to use nzbcheck.filmwhisper.dev:
 
@@ -92,13 +96,20 @@ start a stream, after that, it's just above idle. docker compose stats
 
 ```sh
 CONTAINER ID   NAME             CPU %     MEM USAGE / LIMIT     MEM %     NET I/O           BLOCK I/O        PIDS
-be097c522f12   usenetstreamer   0.95%     63.69MiB / 22.91GiB   0.27%     15.2GB / 15.1GB   582kB / 5.17MB   8
+be097c522f12   usenetstreamer   0.95%     47.69MiB / 22.91GiB   0.27%     15.2GB / 15.1GB   582kB / 5.17MB   8
 62ab78b05567   nzbdav           63.47%    269.4MiB / 22.91GiB   1.15%     15.2GB / 15.1GB   4.1kB / 135MB    47
 7d7a92a615d0   redis            1.13%     22.73MiB / 22.91GiB   0.10%     4.54MB / 2.73MB   25MB / 18.9MB    6
 82a923855e25   prowlarr         0.14%     156.4MiB / 22.91GiB   0.67%     141MB / 135MB     113MB / 125MB    23
 ```
 
 The above screenshot is streaming 4k 80GB file.
+
+```sh no prowlarr dependency (using direct indexing) [How to setup direct indexing](docs/manage_cli.md)
+CONTAINER ID   NAME             CPU %     MEM USAGE / LIMIT     MEM %     NET I/O           BLOCK I/O     PIDS
+f38253d96e3c   usenetstreamer   0.02%     46.93MiB / 22.91GiB   0.20%     173kB / 278kB     0B / 5.8MB    10
+8be644596e90   usenet_redis     0.92%     12.04MiB / 22.91GiB   0.05%     1.97MB / 1.86MB   0B / 15.7MB   6
+63e2ad4d687e   nzbdav           0.72%     185.1MiB / 22.91GiB   0.79%     8.12GB / 7.29GB   0B / 7.9MB    37
+```
 
 ## Features
 
@@ -135,8 +146,6 @@ docker pull ghcr.io/mkcfdc/usenetstreamer:latest
 docker run -d \
    --name usenetstreamer \
    -p 7000:7000 \
-   -e PROWLARR_URL=https://your-prowlarr-host:9696 \
-   -e PROWLARR_API_KEY=your-prowlarr-api-key \
    -e NZBDAV_URL=http://localhost:3000 \
    -e NZBDAV_API_KEY=your-nzbdav-api-key \
    -e NZBDAV_WEBDAV_URL=http://localhost:3000 \
@@ -207,7 +216,7 @@ Tips:
   addon will not show up over HTTP.
 
   ### Project Dependencies
-  - ['altMount'](https://github.com/javi11/altmount)
-  - ['nzbDav'](https://github.com/nzbdav-dev/nzbdav)
-  - ['Prowlarr'](https://github.com/Prowlarr/Prowlarr)
-  - ['nzbHydra2'](https://github.com/theotherp/nzbhydra2)
+  - [altMount](https://github.com/javi11/altmount)
+  - [nzbDav](https://github.com/nzbdav-dev/nzbdav)
+  - [Prowlarr](https://github.com/Prowlarr/Prowlarr)
+  - [nzbHydra2](https://github.com/theotherp/nzbhydra2)
