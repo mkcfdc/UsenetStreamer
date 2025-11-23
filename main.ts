@@ -356,6 +356,7 @@ function extractGuidFromUrl(urlString: string): string | undefined {
         }
 
         const url = new URL(urlString);
+        if (!url) return urlString;
 
         // 1. Check if it's a Query Parameter (NZBGeek style: ?guid=...)
         const guidParam = url.searchParams.get("guid");
