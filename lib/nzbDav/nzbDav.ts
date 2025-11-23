@@ -219,7 +219,7 @@ export async function waitForNzbdavHistorySlot(
 ): Promise<NzbHistorySlot> {
     const deadline = Date.now() + NZBDAV_POLL_TIMEOUT_MS;
     let currentInterval = NZBDAV_POLL_INTERVAL_MS;
-    const MAX_INTERVAL = 8000; // Cap polling at 8 seconds
+    const MAX_INTERVAL = NZBDAV_POLL_TIMEOUT_MS; // Cap polling at 10 seconds == more time is needed for the 4k files.
 
     console.debug(`[NZBDAV] Polling history for ${nzoId}.`);
 
@@ -347,8 +347,6 @@ async function buildNzbdavStream(params: {
         searchName = searchName.split(/[/\\]/).pop() || searchName;
     }
 
-    // 3. If AltMount is on, prefer the intended Hash over whatever the downloader reported 
-    // (unless the downloader completely renamed it, but AltMount relies on Hashes)
     if (isAltMount && intendedJobName && searchName !== intendedJobName) {
         console.log(`[NZBDAV] Enforcing AltMount hash for search: ${intendedJobName} (ignoring history name: ${searchName})`);
         searchName = intendedJobName;
