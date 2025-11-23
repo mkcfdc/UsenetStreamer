@@ -4,6 +4,10 @@ import {
     NZBDAV_WEBDAV_URL,
     NZBDAV_WEBDAV_ROOT,
 } from "../env.ts";
+import { fetcher } from "../utils/fetcher.ts";
+import { DOMParser, Element } from "@b-fuze/deno-dom";
+import { LRUCache } from "lru-cache";
+
 
 export type WebdavEntry = {
     name: string;
@@ -19,6 +23,7 @@ export type WebdavClient = {
 };
 
 let client: WebdavClient | null = null;
+const directoryCache = new LRUCache<string, WebdavEntry[]>({ max: 50 });
 
 function getAuthHeader(): string {
     return "Basic " + btoa(`${NZBDAV_WEBDAV_USER}:${NZBDAV_WEBDAV_PASS}`);
@@ -32,18 +37,6 @@ function getRemoteURL(): string {
     return root ? `${base}/${root}` : base;
 }
 
-/**
- * Minimalistic XML helper to extract content between tags.
- * Handles namespaces (e.g. <d:href> or <D:href> or <href>)
- */
-function getTagValue(xml: string, tagName: string): string | null {
-    // Matches <prefix:tagName>VALUE</prefix:tagName> or <tagName>VALUE</tagName>
-    // \s\S captures newlines
-    const regex = new RegExp(`<([a-zA-Z0-9_]+:)?${tagName}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/([a-zA-Z0-9_]+:)?${tagName}>`, "i");
-    const match = xml.match(regex);
-    return match ? match[2] : null;
-}
-
 export function getWebdavClient(): WebdavClient {
     if (client) return client;
 
@@ -53,106 +46,57 @@ export function getWebdavClient(): WebdavClient {
             const cleanPath = directory.replace(/^\/+/, "").replace(/\/+$/, "");
             const url = cleanPath ? `${remoteURL}/${cleanPath}` : remoteURL;
 
+            if (directoryCache.has(url)) {
+                console.log(`[WebDAV] Cache HIT for ${url}`);
+                return directoryCache.get(url)!;
+            }
+
             console.log(`[WebDAV] PROPFIND ${url}`);
 
-            const res = await fetch(url, {
+            const res = await fetcher<Response>(url, {
                 method: "PROPFIND",
                 headers: {
                     "Authorization": getAuthHeader(),
                     "Depth": "1",
                 },
+                parseJson: false,
             });
 
-            if (!res.ok && res.status !== 207) {
-                await res.text();
-                throw new Error(`WebDAV PROPFIND failed: ${res.status} ${res.statusText}`);
-            }
-
             const xml = await res.text();
+            const doc = new DOMParser().parseFromString(xml, "text/xml");
             const entries: WebdavEntry[] = [];
+            const responses = doc.querySelectorAll("response, d\\:response");
 
-            // 1. Match all <response> blocks
-            // We use a global regex with exec loop to find all occurrences
-            const responseRegex = /<([a-zA-Z0-9_]+:)?response(?:[\s\S]*?)>([\s\S]*?)<\/\1?response>/gi;
-
-            let respMatch;
-            while ((respMatch = responseRegex.exec(xml)) !== null) {
-                const responseBody = respMatch[2]; // Content inside <response>
-
-                // 2. Extract href
-                const hrefRaw = getTagValue(responseBody, "href");
+            for (const resp of responses) {
+                const hrefRaw = resp.querySelector("href, d\\:href")?.textContent;
                 if (!hrefRaw) continue;
-                const href = decodeURIComponent(hrefRaw);
 
-                // 3. Parse propstats
-                // We must find the propstat block that has a status of 200 OK
-                const propstatRegex = /<([a-zA-Z0-9_]+:)?propstat(?:[\s\S]*?)>([\s\S]*?)<\/\1?propstat>/gi;
-
-                let isDirectory = false;
-                let size: number | null = null;
-                let contentType: string | null = null;
-                let lastModified: string | null = null;
-                let statusOk = false;
-
-                let psMatch;
-                while ((psMatch = propstatRegex.exec(responseBody)) !== null) {
-                    const psBody = psMatch[2];
-
-                    // Check status
-                    const status = getTagValue(psBody, "status");
-                    if (!status || !status.includes("200")) {
-                        continue;
+                const propstats = resp.querySelectorAll("propstat, d\\:propstat");
+                let successfulProp: Element | null = null;
+                for (const ps of propstats) {
+                    if (ps.querySelector("status, d\\:status")?.textContent?.includes("200")) {
+                        successfulProp = ps.querySelector("prop, d\\:prop");
+                        break;
                     }
-
-                    statusOk = true;
-
-                    // Extract props from this successful block
-                    const propBody = getTagValue(psBody, "prop");
-                    if (!propBody) continue;
-
-                    // Check isDirectory: look for <resourcetype> containing <collection/>
-                    const resType = getTagValue(propBody, "resourcetype");
-                    if (resType && /<([a-zA-Z0-9_]+:)?collection\b/i.test(resType)) {
-                        isDirectory = true;
-                    }
-
-                    // Size
-                    const len = getTagValue(propBody, "getcontentlength");
-                    if (len) size = Number(len);
-
-                    // Content Type
-                    const type = getTagValue(propBody, "getcontenttype");
-                    if (type) contentType = type;
-
-                    // Last Modified
-                    const mod = getTagValue(propBody, "getlastmodified");
-                    if (mod) lastModified = mod;
                 }
+                if (!successfulProp) continue;
 
-                if (!statusOk) continue;
-
-                // Determine name from href
-                // Remove trailing slash for name extraction
-                const name = href.replace(/\/+$/, "").split("/").pop() || "";
-
+                const href = decodeURIComponent(hrefRaw);
                 entries.push({
-                    name,
+                    name: href.replace(/\/+$/, "").split("/").pop() || "",
                     href,
-                    isDirectory,
-                    size,
-                    type: contentType,
-                    lastModified
+                    isDirectory: !!successfulProp.querySelector("resourcetype, d\\:resourcetype")?.querySelector("collection, d\\:collection"),
+                    size: Number(successfulProp.querySelector("getcontentlength, d\\:getcontentlength")?.textContent) || null,
+                    type: successfulProp.querySelector("getcontenttype, d\\:getcontenttype")?.textContent || null,
+                    lastModified: successfulProp.querySelector("getlastmodified, d\\:getlastmodified")?.textContent || null,
                 });
             }
 
-            // Filter out the parent folder itself
             const requestPath = new URL(url).pathname.replace(/\/+$/, "");
+            const finalEntries = entries.filter(e => decodeURIComponent(e.href.replace(/\/+$/, "")) !== decodeURIComponent(requestPath));
+            directoryCache.set(url, finalEntries);
 
-            return entries.filter(e => {
-                const entryHref = e.href.replace(/\/+$/, "");
-                // Decode again just in case strict comparison fails on encoded chars
-                return decodeURIComponent(entryHref) !== decodeURIComponent(requestPath);
-            });
+            return finalEntries;
         },
     };
 

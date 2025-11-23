@@ -15,6 +15,7 @@ import { buildNzbdavApiParams, getNzbdavCategory, sleep } from "./nzbUtils.ts";
 import { updateNzbStatus } from "../nzbcheck.ts";
 
 import type { EpisodeInfo } from "../../utils/parseRequestedEpisode.ts";
+import { fetcher } from "../../utils/fetcher.ts";
 
 import {
     NZBDAV_POLL_TIMEOUT_MS,
@@ -105,8 +106,6 @@ export async function fetchNzbdav<T = any>(
     params: Record<string, string | number | boolean | undefined> = {},
     timeoutMs: number = 10000
 ): Promise<T> {
-    const url = new URL(`${NZBDAV_URL}/api`);
-
     const cleanParams: Record<string, any> = {};
     for (const [key, val] of Object.entries(params)) {
         if (val !== undefined) cleanParams[key] = val;
@@ -114,28 +113,20 @@ export async function fetchNzbdav<T = any>(
 
     const finalParams = buildNzbdavApiParams(mode, cleanParams);
 
-    const searchParams = new URLSearchParams();
-    for (const [key, value] of Object.entries(finalParams)) {
-        searchParams.append(key, String(value));
-    }
-    url.search = searchParams.toString();
-
-    const response = await fetch(url, {
-        signal: AbortSignal.timeout(timeoutMs),
-        headers: { "X-API-KEY": NZBDAV_API_KEY || "" },
+    // 3. Use fetcher
+    const data = await fetcher<T & { error?: string }>(`${NZBDAV_URL}/api`, {
+        params: finalParams,
+        timeoutMs,
+        headers: {
+            "X-API-KEY": NZBDAV_API_KEY || ""
+        },
     });
 
-    if (!response.ok) {
-        throw new Error(`[NZBDAV] HTTP ${response.status} calling '${mode}'`);
+    if (data?.error) {
+        throw new Error(`[NZBDAV] API Error: ${data.error}`);
     }
 
-    const json = await response.json();
-
-    if (json?.error) {
-        throw new Error(`[NZBDAV] API Error: ${json.error}`);
-    }
-
-    return json as T;
+    return data;
 }
 
 async function removeFailedProwlarrEntry(redisKey: string, downloadUrl: string) {

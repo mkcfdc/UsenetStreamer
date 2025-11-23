@@ -1,4 +1,5 @@
 import type { SearchResult } from "../utils/getMediaAndSearchResults.ts";
+import { fetcher } from "../utils/fetcher.ts";
 
 const NZB_CHECK_URL = Deno.env.get("NZB_CHECK_URL");
 const NZB_CHECK_API_KEY = Deno.env.get("NZB_CHECK_API_KEY");
@@ -14,6 +15,15 @@ interface NZBCheckCache extends SearchResult {
     last_updated: string | null;
 }
 
+interface NzbCheckResponse {
+    success: boolean;
+    data: Record<string, NZBCheckCache>;
+}
+
+interface NzbStatusResponse {
+    success: boolean;
+}
+
 export const checkNzb = async (items: NzbCheckItem[]) => {
     if (!NZB_CHECK_URL || !NZB_CHECK_API_KEY) {
         console.warn("NZB Check URL or API Key not set. Skipping NZB check.");
@@ -21,22 +31,15 @@ export const checkNzb = async (items: NzbCheckItem[]) => {
     }
 
     try {
-        const response = await fetch(`${NZB_CHECK_URL}/status/search`, {
+        const data = await fetcher<NzbCheckResponse>(`${NZB_CHECK_URL}/status/search`, {
             method: "POST",
             headers: {
-                "Content-Type": "application/json",
                 "X-API-KEY": NZB_CHECK_API_KEY,
             },
-            body: JSON.stringify({ items }),
+            body: { items },
         });
 
-        if (!response.ok) {
-            console.error("Failed to check NZBs:", response.statusText);
-            return { success: false, data: {} };
-        }
-
-        const data = await response.json();
-        return data as { success: boolean; data: Record<string, NZBCheckCache> };
+        return data;
     } catch (error) {
         console.error("Error checking NZBs:", error);
         return { success: false, data: {} };
@@ -48,21 +51,22 @@ export const updateNzbStatus = async (item: NzbCheckItem, isComplete: boolean, m
         console.warn("NZB Check URL or API Key not set. Skipping NZB status update.");
         return { success: false };
     }
+
     try {
-        const response = await fetch(`${NZB_CHECK_URL}/status`, {
+        const data = await fetcher<NzbStatusResponse>(`${NZB_CHECK_URL}/status`, {
             method: "POST",
             headers: {
-                "Content-Type": "application/json",
                 "X-API-KEY": NZB_CHECK_API_KEY,
             },
-            body: JSON.stringify({ file_id: item.file_id, indexer: item.source_indexer, is_complete: isComplete, status_message: message }),
+            body: {
+                file_id: item.file_id,
+                indexer: item.source_indexer,
+                is_complete: isComplete,
+                status_message: message
+            },
         });
-        if (!response.ok) {
-            console.error("Failed to update NZB status:", response.statusText);
-            return { success: false };
-        }
-        const data = await response.json();
-        return data as { success: boolean };
+
+        return data;
     } catch (error) {
         console.error("Error updating NZB status:", error);
         return { success: false };

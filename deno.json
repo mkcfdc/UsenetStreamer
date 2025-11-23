@@ -3,6 +3,7 @@
     "dev": "deno run --allow-env --allow-net --allow-read --env-file=.env main.ts"
   },
   "imports": {
+    "@b-fuze/deno-dom": "jsr:@b-fuze/deno-dom@^0.1.56",
     "@ctrl/video-filename-parser": "npm:@ctrl/video-filename-parser@^5.4.1",
     "@std/encoding": "jsr:@std/encoding@^1.0.10",
     "@std/media-types": "jsr:@std/media-types@^1.1.0",
