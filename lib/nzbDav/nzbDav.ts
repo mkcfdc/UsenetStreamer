@@ -287,10 +287,14 @@ async function buildNzbdavStream(params: {
     const { downloadUrl, category, title, requestedEpisode, indexer, fileId, signal } = params;
     const cacheKey = `streams:${md5(downloadUrl)}`;
 
-    // 1. Check Persistence Cache (Redis)
-    const cached = await getJsonValue<StreamResult | StreamResult[]>(cacheKey, "$");
+    // 1. Determine correct Job Name logic
+    // If using AltMount, we force the use of the MD5 hash as the job name.
+    // This ensures the folder on disk matches what we search for, preventing "Human Title" vs "Hash" mismatches.
+    const isAltMount = NZBDAV_URL.includes("altmount");
+    const intendedJobName = isAltMount ? md5(downloadUrl) : title;
 
-    // Handle both array (JSONPath standard) and object returns
+    // 2. Check Persistence Cache (Redis)
+    const cached = await getJsonValue<StreamResult | StreamResult[]>(cacheKey, "$");
     const validCache = Array.isArray(cached) ? cached[0] : cached;
 
     if (validCache?.viewPath) {
@@ -298,11 +302,8 @@ async function buildNzbdavStream(params: {
         return validCache;
     }
 
-    // 2. Check File System / AltMount pre-existence
-    const isAltMount = NZBDAV_URL.includes("altmount");
-    const jobName = isAltMount ? md5(downloadUrl) : title;
-
-    const existingFile = await findBestVideoFile({ category, jobName, requestedEpisode });
+    // 3. Check File System / AltMount pre-existence
+    const existingFile = await findBestVideoFile({ category, jobName: intendedJobName, requestedEpisode });
 
     if (existingFile?.viewPath) {
         const typeLabel = USE_STRM_FILES ? "STRM" : isAltMount ? "AltMount" : "NZBDAV";
@@ -313,39 +314,64 @@ async function buildNzbdavStream(params: {
             fileName: existingFile.viewPath.split("/").pop() ?? "video.mkv",
             inFileSystem: !USE_STRM_FILES,
             category,
-            jobName
+            jobName: intendedJobName
         };
 
         await setJsonValue(cacheKey, "$.viewPath", existingFile.viewPath);
         return result;
     }
 
-    // 3. Proxy Download (Add to NZBDav) 
+    // 4. Proxy Download (Add to NZBDav) 
     const proxyUrl = `${ADDON_BASE_URL}/nzb/proxy/${md5(downloadUrl)}.nzb`;
-    const { nzoId } = await addNzbToNzbdav(proxyUrl, category, title);
+    // Pass intendedJobName (hash if altmount) instead of title
+    const { nzoId } = await addNzbToNzbdav(proxyUrl, category, intendedJobName);
 
-    // 4. Wait for completion
+    // 5. Wait for completion
     const slot = await waitForNzbdavHistorySlot(nzoId, category, signal);
 
-    // Use normalized keys from slot
     const slotCategory = slot.category || category;
-    const slotJobName = slot.jobName || slot.name;
 
-    if (!slotJobName) throw new Error("[NZBDAV] No job name returned from history");
+    // --- SANITIZATION FIX ---
+    // Sometimes downloaders return paths like "tmp/content/Movies/hash.nzb" as the name.
+    // We must clean this up before searching.
+    let searchName = slot.jobName || slot.name || intendedJobName;
 
-    // 5. Find final file path
+    // 1. Remove .nzb extension if present (downloader often reports filename as name)
+    if (searchName.endsWith(".nzb")) {
+        searchName = searchName.slice(0, -4);
+    }
+
+    // 2. If it contains slashes (path leak), take the last segment (basename)
+    if (searchName.includes("/") || searchName.includes("\\")) {
+        console.warn(`[NZBDAV] Job name contained path characters: "${searchName}". Sanitizing.`);
+        searchName = searchName.split(/[/\\]/).pop() || searchName;
+    }
+
+    // 3. If AltMount is on, prefer the intended Hash over whatever the downloader reported 
+    // (unless the downloader completely renamed it, but AltMount relies on Hashes)
+    if (isAltMount && intendedJobName && searchName !== intendedJobName) {
+        console.log(`[NZBDAV] Enforcing AltMount hash for search: ${intendedJobName} (ignoring history name: ${searchName})`);
+        searchName = intendedJobName;
+    }
+
+    if (!searchName) throw new Error("[NZBDAV] No job name available for file search");
+
+    // 6. Find final file path
     const bestFile = await findBestVideoFile({
         category: slotCategory,
-        jobName: slotJobName,
+        jobName: searchName,
         requestedEpisode,
     });
 
-    if (!bestFile) throw new Error("[NZBDAV] Download complete but no video file found");
+    if (!bestFile) {
+        console.error(`[NZBDAV] Search failed for: Category=${slotCategory}, Job=${searchName}`);
+        throw new Error("[NZBDAV] Download complete but no video file found");
+    }
 
     const result: StreamResult = {
         nzoId,
         category: slotCategory,
-        jobName: slotJobName,
+        jobName: searchName,
         viewPath: bestFile.viewPath,
         size: Number(bestFile.size) || 0,
         fileName: bestFile.name,
@@ -359,7 +385,6 @@ async function buildNzbdavStream(params: {
     await setJsonValue(cacheKey, "$", result);
     console.log(`[NZBDAV] Stream ready: ${result.viewPath}`);
 
-    // Update external checks
     if (indexer && fileId) {
         console.log(`[NZBDAV] Updating NZB status: indexer=${indexer}, fileId=${fileId}`);
         await updateNzbStatus({ source_indexer: indexer, file_id: fileId }, true, "All files present. Ready to stream.");
@@ -367,6 +392,7 @@ async function buildNzbdavStream(params: {
 
     return result;
 }
+
 
 async function getOrCreateNzbdavStream(
     cacheKey: string,
@@ -404,7 +430,6 @@ async function getOrCreateNzbdavStream(
 export async function streamNzbdavProxy(keyHash: string, req: Request): Promise<Response> {
     const redisKey = `streams:${keyHash}`;
 
-    // Optimistic cache retrieval
     let meta = streamMetadataCache.get(redisKey)?.data || null;
     if (!meta) {
         meta = await getJsonValue<StreamCache>(redisKey);
@@ -427,7 +452,7 @@ export async function streamNzbdavProxy(keyHash: string, req: Request): Promise<
     const category = getNzbdavCategory(type);
     const episode = parseRequestedEpisode(type, id);
 
-    // Use hash of URL for locking, ensuring multiple requests for the same file share one job
+    // Use MD5 lock to prevent parallel downloads of same file
     const lockKey = `stream_build:${md5(downloadUrl)}`;
 
     try {
