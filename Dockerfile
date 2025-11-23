@@ -1,6 +1,7 @@
 FROM denoland/deno:alpine
 
 WORKDIR /app
+RUN mkdir -p /app/data
 
 # Copy only what’s needed
 COPY . .
