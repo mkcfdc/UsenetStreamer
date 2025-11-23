@@ -22,180 +22,192 @@ interface FindFileParams {
 }
 
 const VIDEO_EXT_REGEX = /\.(mp4|mkv|avi|mov|wmv|flv|webm|m4v|ts|m2ts|mpg|mpeg)$/i;
-const MAX_CONCURRENT_REQUESTS = 5; // Adjust based on server limits
+const MAX_CONCURRENT_REQUESTS = 5;
 
 export async function findBestVideoFile(params: FindFileParams): Promise<FileCandidate | null> {
-    // 1. Strategy: Check local STRM files first (Fastest)
+    // 1. Check local STRM files first (Fastest, no WebDAV overhead)
     if (USE_STRM_FILES) {
         const strmCandidate = await findStrmCandidate(params);
         if (strmCandidate) return strmCandidate;
     }
 
-    // 2. Strategy: Scan WebDAV directory (Recursive/Fallback)
-    return await findWebdavCandidate(params);
-}
-
-/**
- * Strategy 1: Local STRM File Check
- * Checks specific local directories for .strm files pointing to the content.
- */
-async function findStrmCandidate({ category, jobName }: FindFileParams): Promise<FileCandidate | null> {
-    const strmDir = `/strm/content/${category}/${jobName}/`;
-
-    console.log(`[STRM] Checking directory: ${strmDir}`);
-
-    // Check if directory exists
-    try {
-        const stat = await Deno.stat(strmDir);
-        if (!stat.isDirectory) return null;
-    } catch {
-        console.log(`[STRM] Directory not found: ${strmDir}`);
-        return null; // Dir doesn't exist
-    }
-
-    // Iterate directory
-    for await (const entry of Deno.readDir(strmDir)) {
-        if (!entry.isFile || !entry.name.toLowerCase().endsWith(".strm")) continue;
-
-        const strmFilePath = `${strmDir}${entry.name}`;
-        console.log(`[STRM] Found STRM file: ${strmFilePath}`);
-
+    // 2. Scan WebDAV with Retries
+    // Filesystem latency (moving from tmp -> final) is the #1 cause of "File not found"
+    // We try 3 times with increasing delays.
+    for (let i = 0; i < 3; i++) {
         try {
-            const content = await Deno.readTextFile(strmFilePath);
-            const urlStr = content.trim();
-            if (!urlStr) continue;
-
-            const urlObj = new URL(urlStr);
-            const pathParam = urlObj.searchParams.get("path");
-
-            if (!pathParam) continue;
-
-            const publicBaseUrl = NZBDAV_URL.replace(/\/sabnzbd\/?$/, "");
-            const viewPath = urlStr.replace("http://localhost:8080", publicBaseUrl);
-            const fileName = pathParam.split("/").pop() || entry.name;
-
-            return {
-                viewPath,
-                absolutePath: pathParam,
-                name: fileName,
-                size: 0,
-                matchesEpisode: true, // If a STRM exists for this specific job, it's a match
-            };
-
+            const candidate = await findWebdavCandidate(params);
+            if (candidate) return candidate;
         } catch (e) {
-            console.warn(`[STRM] Error reading file ${strmFilePath}:`, e);
+            console.warn(`[FindFile] Attempt ${i + 1} error:`, e);
+        }
+
+        if (i < 2) {
+            const delay = (i + 1) * 1000; // 1s, then 2s
+            console.log(`[FindFile] File not found yet. Retrying in ${delay}ms...`);
+            await new Promise((resolve) => setTimeout(resolve, delay));
         }
     }
 
-    console.log(`[STRM] No valid *.strm files found in ${strmDir}`);
+    return null;
+}
+
+async function findStrmCandidate({ category, jobName }: FindFileParams): Promise<FileCandidate | null> {
+    // Ensure we don't end up with double slashes if jobName is empty or malformed
+    const safeJobName = jobName.replace(/^\/|\/$/g, "");
+    const strmDir = `/strm/content/${category}/${safeJobName}`;
+
+    try {
+        // Quick existence check
+        await Deno.stat(strmDir);
+    } catch {
+        return null;
+    }
+
+    console.log(`[STRM] Scanning: ${strmDir}`);
+
+    try {
+        for await (const entry of Deno.readDir(strmDir)) {
+            if (!entry.isFile || !entry.name.toLowerCase().endsWith(".strm")) continue;
+
+            const strmFilePath = `${strmDir}/${entry.name}`;
+
+            try {
+                const content = await Deno.readTextFile(strmFilePath);
+                const urlStr = content.trim();
+                if (!urlStr) continue;
+
+                // Extract the internal path from the stored URL
+                // Format usually: http://host:port/webdav/path/to/file.mkv
+                const urlObj = new URL(urlStr);
+
+                // If using standard strm generation, the path is often in the path part or a query param
+                // Adjust this logic to match how you generate STRMs
+                const rawPath = urlObj.searchParams.get("path") || urlObj.pathname.replace("/webdav", "");
+
+                // Dynamic URL replacement ensures it works even if container networking changes
+                const publicBaseUrl = NZBDAV_URL.replace(/\/sabnzbd\/?$/, "").replace(/\/$/, "");
+                // Reconstruct view path based on current environment
+                const viewPath = urlStr.replace(/^https?:\/\/[^/]+/, publicBaseUrl);
+
+                return {
+                    viewPath,
+                    absolutePath: rawPath,
+                    name: entry.name.replace(".strm", ""),
+                    size: 0,
+                    matchesEpisode: true,
+                };
+            } catch (e) {
+                console.warn(`[STRM] Read error ${entry.name}:`, e);
+            }
+        }
+    } catch (e) {
+        console.warn(`[STRM] Directory read error:`, e);
+    }
+
     return null;
 }
 
 export async function findWebdavCandidate({ category, jobName, requestedEpisode }: FindFileParams): Promise<FileCandidate | null> {
     const client = getWebdavClient();
 
-    // 1. Pre-compute the Episode Regex ONCE. 
-    // This saves creating thousands of RegExp objects during the file scan.
+    // Normalize root path. Ensure no trailing slash for consistency.
+    const rootPath = normalizeNzbdavPath(`/content/${category}/${jobName}`).replace(/\/$/, "");
+
     let episodeRegex: RegExp | null = null;
     if (requestedEpisode?.season && requestedEpisode?.episode) {
         const { season, episode } = requestedEpisode;
-        // Optimized pattern: S01E01, S1E1, S01.E01, 1x01
+        // Strict S01E01 or 1x01 matching to avoid false positives
         episodeRegex = new RegExp(
-            `(?:s0*${season}\\.?e0*${episode}|0*${season}x0*${episode})(?![0-9])`,
+            `(?:s0*${season}[. ]?e0*${episode}|0*${season}x0*${episode})(?![0-9])`,
             "i"
         );
     }
 
-    const rootPath = normalizeNzbdavPath(`/content/${category}/${jobName}`);
-
-    // We use a simple object structure to avoid class overhead
+    // Switch to BFS (Breadth-First Search) using shift() instead of pop().
+    // We want to find the main file in the root folder BEFORE digging into "Samples", "Subs", etc.
     const queue = [{ path: rootPath, depth: 0 }];
     const processing = new Set<Promise<void>>();
     const visited = new Set<string>();
 
-    // Shared state
     let bestMatch: FileCandidate | null = null;
     let bestEpisodeMatch: FileCandidate | null = null;
 
-    // Helper to process a single directory
     const processDirectory = async (currentPath: string, depth: number) => {
-        // Early exit if deeply nested or already visited
         if (depth > NZBDAV_MAX_DIRECTORY_DEPTH || visited.has(currentPath)) return;
         visited.add(currentPath);
 
         try {
             const entries = await client.getDirectoryContents(currentPath);
 
-            for (let i = 0; i < entries.length; i++) {
-                const entry = entries[i];
-                // Manual path concatenation is faster than calling a normalization function repeatedly
-                // We assume currentPath does not have a trailing slash (controlled by our logic)
-                const fullEntryPath = currentPath + "/" + entry.name;
+            for (const entry of entries) {
+                // Safer path concatenation
+                const separator = currentPath.endsWith("/") ? "" : "/";
+                const fullEntryPath = `${currentPath}${separator}${entry.name}`;
 
                 if (entry.isDirectory) {
+                    // Add to queue for BFS processing
                     queue.push({ path: fullEntryPath, depth: depth + 1 });
                     continue;
                 }
 
-                // Fast fail: Check extension first (fast string/regex check) before logic
+                // 1. Extension Check
                 if (!entry.size || !VIDEO_EXT_REGEX.test(entry.name)) continue;
 
-                // Use the pre-compiled regex
-                // If no episode requested, everything matches (true)
+                // 2. Sample Check (Skip small sample files)
+                // Filter out files < 50MB typically, unless it's the only thing there
+                const size = typeof entry.size === 'string' ? parseInt(entry.size, 10) : entry.size;
+                const isSample = entry.name.toLowerCase().includes("sample") && size < 100 * 1024 * 1024;
+                if (isSample) continue;
+
                 const matchesEpisode = episodeRegex ? episodeRegex.test(entry.name) : true;
 
-                // Only build the candidate object if necessary
-                const size = typeof entry.size === 'string' ? parseInt(entry.size, 10) : entry.size;
+                // 3. Candidate Selection
+                const candidate: FileCandidate = {
+                    name: entry.name,
+                    size: size,
+                    matchesEpisode,
+                    absolutePath: fullEntryPath,
+                    // Remove leading slash for viewPath if necessary
+                    viewPath: fullEntryPath.startsWith("/") ? fullEntryPath.substring(1) : fullEntryPath,
+                };
 
-                // Inline candidate update logic to avoid object creation overhead
+                // Priority Logic:
                 if (matchesEpisode) {
+                    // If we have an episode match, verify it's the largest one (avoiding duplicates)
                     if (!bestEpisodeMatch || size > bestEpisodeMatch.size) {
-                        bestEpisodeMatch = {
-                            name: entry.name,
-                            size: size,
-                            matchesEpisode: true,
-                            absolutePath: fullEntryPath,
-                            viewPath: fullEntryPath.substring(1), // Faster than replace(/^\/+/, "")
-                        };
+                        bestEpisodeMatch = candidate;
+                    }
+                } else {
+                    // Fallback: Largest video file found generally
+                    if (!bestMatch || size > bestMatch.size) {
+                        bestMatch = candidate;
                     }
                 }
-
-                // Track global largest file (fallback)
-                if (!bestMatch || size > bestMatch.size) {
-                    bestMatch = {
-                        name: entry.name,
-                        size: size,
-                        matchesEpisode, // matchesEpisode might be false here
-                        absolutePath: fullEntryPath,
-                        viewPath: fullEntryPath.substring(1),
-                    };
-                }
             }
-        } catch (e) {
-            // Silent fail for navigation errors
-            // console.warn(`Failed to list ${currentPath}`, e);
+        } catch (e: any) {
+            // Log root failures, ignore deep folder failures
+            if (depth === 0) {
+                console.warn(`[WebDAV] Root access failed: ${currentPath} (${e.message || e})`);
+                // If the root folder doesn't exist (404), this is critical info
+                throw e;
+            }
         }
     };
 
-    // 2. Concurrency Loop
-    // Keeps a specific number of requests active at once
+    // Concurrency Loop
     while (queue.length > 0 || processing.size > 0) {
-
-        // Fill the pool
         while (queue.length > 0 && processing.size < MAX_CONCURRENT_REQUESTS) {
-            const next = queue.pop(); // .pop() (DFS) is O(1), .shift() (BFS) is O(n)
+            const next = queue.shift(); // BFS: Process oldest item first (Top level)
             if (!next) break;
 
-            // Create promise
-            const task = processDirectory(next.path, next.depth).then(() => {
-                // Remove self from processing set when done
-                processing.delete(task);
-            });
+            const task = processDirectory(next.path, next.depth)
+                .then(() => { processing.delete(task); })
+                .catch(() => { processing.delete(task); }); // Safety catch
 
             processing.add(task);
         }
 
-        // Wait for at least one to finish before looping again to refill
         if (processing.size > 0) {
             await Promise.race(processing);
         }
