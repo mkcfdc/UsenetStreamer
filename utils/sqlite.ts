@@ -1,4 +1,3 @@
-// lib/db.ts
 import { DatabaseSync } from "node:sqlite";
 
 let dbInstance: DatabaseSync | null = null;
@@ -11,7 +10,6 @@ function getDb(): DatabaseSync {
 
     console.log(`[Database] Initializing node:sqlite at: ${dbPath}`);
 
-    // node:sqlite is synchronous and built-in
     const db = new DatabaseSync(dbPath);
 
     // Initialize schema
@@ -21,7 +19,7 @@ function getDb(): DatabaseSync {
       name TEXT NOT NULL,
       url TEXT NOT NULL,
       api_key TEXT NOT NULL,
-      enabled BOOLEAN DEFAULT 1
+      enabled INTEGER DEFAULT 1  
     ) STRICT
   `);
 
@@ -41,12 +39,12 @@ export interface Indexer {
 
 export const getEnabledIndexers = (): Indexer[] => {
     const stmt = getDb().prepare("SELECT * FROM indexers WHERE enabled = 1");
-    return stmt.all() as Indexer[];
+    return stmt.all() as unknown as Indexer[];
 };
 
 export const getAllIndexers = (): Indexer[] => {
     const stmt = getDb().prepare("SELECT * FROM indexers");
-    return stmt.all() as Indexer[];
+    return stmt.all() as unknown as Indexer[];
 };
 
 export const addIndexer = (name: string, url: string, apiKey: string) => {
