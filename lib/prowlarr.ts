@@ -59,16 +59,17 @@ const normalizeTitle = (title: string): string => {
 };
 
 const fileMatchesEpisode = (fileName: string, season: number, episode: number): boolean => {
-    const s = season;
-    const e = episode;
-    // Regex patterns: S01E01, S1E1, 1x01, Ep 01
-    const patterns = [
-        new RegExp(`s0*${s}e0*${e}(?![0-9])`, "i"),
-        new RegExp(`s0*${s}\\.?e0*${e}(?![0-9])`, "i"),
-        new RegExp(`0*${s}[xX]0*${e}(?![0-9])`, "i"),
-        new RegExp(`[eE](?:pisode|p)\\.?\\s*0*${e}(?![0-9])`, "i"),
-    ];
-    return patterns.some((regex) => regex.test(fileName));
+    // We construct a single Regex with "OR" operators (|)
+    // 1. s0*S\.?e0*E   -> Matches S01E01, S1E1, S01.E01 (Handles the dot automatically)
+    // 2. 0*Sx0*E       -> Matches 1x01, 01x01
+    // 3. ep...         -> Matches Ep 01, Episode 01
+
+    const regex = new RegExp(
+        `(?:s0*${season}\\.?e0*${episode}|0*${season}x0*${episode}|(?:episode|ep)\\.?\\s*0*${episode})(?![0-9])`,
+        "i"
+    );
+
+    return regex.test(fileName);
 };
 
 const titleContainsName = (title: string, name: string): boolean => {
@@ -119,7 +120,7 @@ export async function searchProwlarr(opts: ProwlarrSearchOptions): Promise<Prowl
     // 3. Execute Searches in Parallel
     const searchPromises = uniquePlans.map(async (plan) => {
         const params = new URLSearchParams({
-            apikey: PROWLARR_API_KEY,
+            apikey: PROWLARR_API_KEY!,
             limit,
             offset: "0",
             indexerIds: "-1",

@@ -25,7 +25,7 @@ const REMOTE_BASE = NZBDAV_WEBDAV_URL.replace(/\/+$/, "");
 const ROOT_PATH = (NZBDAV_WEBDAV_ROOT || "").replace(/^\/+/, "").replace(/\/+$/, "");
 const REMOTE_ROOT_URL = ROOT_PATH ? `${REMOTE_BASE}/${ROOT_PATH}` : REMOTE_BASE;
 
-// 2. Pre-compile Regexes (Huge performance gain over creating new RegExp in loops)
+// 2. Pre-compile Regexes
 // Matches <d:response>...</d:response> or <response>...</response>
 const RX_RESPONSE = /<([a-zA-Z0-9_]+:)?response(?:[\s\S]*?)>([\s\S]*?)<\/\1?response>/gi;
 // Matches <d:href>...</d:href>
@@ -120,11 +120,6 @@ export function getWebdavClient(): WebdavClient {
                 });
             }
 
-            // Optimized Filter: Remove the entry that matches the request directory
-            // PROPFIND Depth 1 includes the folder itself, usually the first item or an item where href matches request.
-
-            // Get the path suffix from the request URL for comparison
-            // e.g. URL: https://.../Video/ -> path: /Video
             const requestPath = new URL(url).pathname.replace(/\/+$/, "");
             const decodedRequestPath = decodeURIComponent(requestPath);
 

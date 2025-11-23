@@ -87,15 +87,14 @@ const normalizeTitle = (title: string): string => {
 };
 
 const fileMatchesEpisode = (fileName: string, season: number, episode: number): boolean => {
-    const s = season;
-    const e = episode;
-    const patterns = [
-        new RegExp(`s0*${s}e0*${e}(?![0-9])`, "i"),
-        new RegExp(`s0*${s}\\.?e0*${e}(?![0-9])`, "i"),
-        new RegExp(`0*${s}[xX]0*${e}(?![0-9])`, "i"),
-        new RegExp(`[eE](?:pisode|p)\\.?\\s*0*${e}(?![0-9])`, "i"),
-    ];
-    return patterns.some((regex) => regex.test(fileName));
+    // Combine valid patterns into a single Regex.
+    // 1. Matches "S01E01", "s1e1", "S01.E01" (Pattern 1 & 2 merged)
+    // 2. Matches "1x01", "01x01" (Pattern 3)
+    // Note: Removed the "Episode XX" pattern because it ignored the season 
+    // (causing S02E01 to match a search for S01E01).
+    const regex = new RegExp(`(?:s0*${season}\\.?e0*${episode}|0*${season}x0*${episode})(?![0-9])`, "i");
+
+    return regex.test(fileName);
 };
 
 const titleContainsName = (title: string, name: string): boolean => {
@@ -143,7 +142,7 @@ export async function searchHydra(opts: HydraSearchOptions): Promise<HydraResult
     // 3. Execute Searches
     const searchPromises = plans.map(async (plan) => {
         const params = new URLSearchParams({
-            apikey: NZBHYDRA_API_KEY,
+            apikey: NZBHYDRA_API_KEY!,
             limit,
             offset: "0",
             cat: categoryId,
