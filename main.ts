@@ -348,28 +348,23 @@ function getResolutionIcon(resolution: string): string {
 }
 
 function extractGuidFromUrl(urlString: string): string | undefined {
+
+    if (typeof NZBHYDRA_URL !== 'undefined' && NZBHYDRA_URL &&
+        typeof NZBHYDRA_API_KEY !== 'undefined' && NZBHYDRA_API_KEY) {
+        return urlString;
+    }
+
     try {
-
-        if (NZBHYDRA_URL && NZBHYDRA_API_KEY) {
-            // we are using hydra, just return urlString;
-            return urlString;
-        }
-
         const url = new URL(urlString);
-        if (!url) return urlString;
 
-        // 1. Check if it's a Query Parameter (NZBGeek style: ?guid=...)
         const guidParam = url.searchParams.get("guid");
         if (guidParam) return guidParam;
 
-        // 2. Fallback to the last part of the Path (NZBPlanet style: /details/...)
-        // split by '/' and filter out empty strings (handles trailing slashes)
         const pathSegments = url.pathname.split('/').filter(Boolean);
         return pathSegments.pop();
 
     } catch (_error: unknown) {
-        console.error("Invalid URL provided:", urlString);
-        return undefined;
+        return urlString;
     }
 }
 
