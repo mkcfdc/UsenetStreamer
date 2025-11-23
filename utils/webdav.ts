@@ -112,3 +112,14 @@ export function getWebdavClient(): WebdavClient {
 
     return client;
 }
+
+export function normalizeNzbdavPath(path: string): string {
+    return (
+        "/" +
+        path
+            .replace(/\\/g, "/")
+            .replace(/\/\/+/g, "/")
+            .replace(/^\/+/, "")
+            .replace(/\/+$/, "")
+    );
+}
