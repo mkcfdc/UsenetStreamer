@@ -12,4 +12,4 @@ RUN deno cache main.ts
 EXPOSE 7001
 
 # Run the app (no type checking for faster startup)
-CMD ["deno", "run", "--no-check", "--unstable-otel", "--allow-net", "--allow-env", "--allow-read", "--allow-write", "main.ts"]
+CMD ["deno", "run", "--no-check", "--unstable-otel", "--allow-net", "--allow-env", "--allow-read", "--allow-write", "--allow-ffi", "main.ts"]

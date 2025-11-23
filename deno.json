@@ -5,7 +5,6 @@
   },
   "imports": {
     "@ctrl/video-filename-parser": "npm:@ctrl/video-filename-parser@^5.4.1",
-    "@db/sqlite": "jsr:@db/sqlite@^0.13.0",
     "@libs/xml": "jsr:@libs/xml@^7.0.3",
     "@std/cli": "jsr:@std/cli@^1.0.24",
     "@std/encoding": "jsr:@std/encoding@^1.0.10",
