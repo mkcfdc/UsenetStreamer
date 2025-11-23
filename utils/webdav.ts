@@ -1,12 +1,12 @@
+// deno-lint-ignore-file no-explicit-any
 import {
     NZBDAV_WEBDAV_USER,
     NZBDAV_WEBDAV_PASS,
     NZBDAV_WEBDAV_URL,
     NZBDAV_WEBDAV_ROOT,
 } from "../env.ts";
-import { DOMParser, Element } from "@b-fuze/deno-dom";
+import { parse } from "@libs/xml/parse";
 import { LRUCache } from "lru-cache";
-
 
 export type WebdavEntry = {
     name: string;
@@ -55,10 +55,7 @@ export function getWebdavClient(): WebdavClient {
             try {
                 const res = await fetch(url, {
                     method: "PROPFIND",
-                    headers: {
-                        "Authorization": getAuthHeader(),
-                        "Depth": "1",
-                    },
+                    headers: { "Authorization": getAuthHeader(), "Depth": "1" },
                 });
 
                 if (!res.ok) {
@@ -67,32 +64,36 @@ export function getWebdavClient(): WebdavClient {
                 }
 
                 const xml = await res.text();
-                const doc = new DOMParser().parseFromString(xml, "text/xml");
+                const doc = parse(xml) as any;
                 const entries: WebdavEntry[] = [];
-                const responses = doc.querySelectorAll("response, d\\:response");
 
-                for (const resp of responses) {
-                    const hrefRaw = resp.querySelector("href, d\\:href")?.textContent;
-                    if (!hrefRaw) continue;
+                const responses = doc.multistatus?.response;
+                if (!responses) return [];
 
-                    const propstats = resp.querySelectorAll("propstat, d\\:propstat");
-                    let successfulProp: Element | null = null;
-                    for (const ps of propstats) {
-                        if (ps.querySelector("status, d\\:status")?.textContent?.includes("200")) {
-                            successfulProp = ps.querySelector("prop, d\\:prop");
-                            break;
-                        }
-                    }
-                    if (!successfulProp) continue;
+                const responseArray = Array.isArray(responses) ? responses : [responses];
+
+                for (const resp of responseArray) {
+                    if (!resp) continue;
+
+                    const hrefRaw = resp.href;
+                    if (typeof hrefRaw !== "string") continue;
+
+                    const propstats: { status?: string; prop?: any }[] = Array.isArray(resp.propstat) ? resp.propstat : [resp.propstat];
+                    const successfulPropstat = propstats.find(ps => typeof ps?.status === "string" && ps.status.includes("200"));
+
+                    if (!successfulPropstat?.prop) continue;
+
+                    const prop = successfulPropstat.prop;
+                    const resourcetype = prop.resourcetype;
 
                     const href = decodeURIComponent(hrefRaw);
                     entries.push({
                         name: href.replace(/\/+$/, "").split("/").pop() || "",
                         href,
-                        isDirectory: !!successfulProp.querySelector("resourcetyp, d\\:resourcetype")?.querySelector("collection, d\\:collection"),
-                        size: Number(successfulProp.querySelector("getcontentlength, d\\:getcontentlength")?.textContent) || null,
-                        type: successfulProp.querySelector("getcontenttype, d\\:getcontenttype")?.textContent || null,
-                        lastModified: successfulProp.querySelector("getlastmodified, d\\:getlastmodified")?.textContent || null,
+                        isDirectory: !!resourcetype && typeof resourcetype === 'object' && 'collection' in resourcetype,
+                        size: Number(prop.getcontentlength) || null,
+                        type: prop.getcontenttype || null,
+                        lastModified: prop.getlastmodified || null,
                     });
                 }
 
@@ -101,23 +102,13 @@ export function getWebdavClient(): WebdavClient {
                 directoryCache.set(url, finalEntries);
 
                 return finalEntries;
+
             } catch (error) {
-                console.error(`[WebDAV] Network error fetching ${url}:`, error);
+                console.error(`[WebDAV] Network or parsing error fetching ${url}:`, error);
                 return [];
             }
         },
     };
 
     return client;
-}
-
-export function normalizeNzbdavPath(path: string): string {
-    return (
-        "/" +
-        path
-            .replace(/\\/g, "/")
-            .replace(/\/\/+/g, "/")
-            .replace(/^\/+/, "")
-            .replace(/\/+$/, "")
-    );
 }
