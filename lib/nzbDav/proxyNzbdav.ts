@@ -84,12 +84,12 @@ export async function proxyNzbdavStream(
             redirect: "follow", // Important for some WebDAV setups
         });
     } catch (e: any) {
-        if (inFileSystem) await cleanupOnError(viewPath, `Fetch failed: ${e.message}`);
+        if (inFileSystem) cleanupOnError(viewPath, `Fetch failed: ${e.message}`);
         return (await streamFailureVideo(req, `Fetch Error: ${e.message}`)) || new Response("Upstream Error", { status: 502 });
     }
 
     if (!upstream.ok) {
-        if (inFileSystem) await cleanupOnError(viewPath, `Upstream status ${upstream.status}`);
+        if (inFileSystem) cleanupOnError(viewPath, `Upstream status ${upstream.status}`);
 
         // If upstream 404s, return 404 immediately
         if (upstream.status === 404) return new Response("Not Found", { status: 404 });
@@ -122,7 +122,7 @@ export async function proxyNzbdavStream(
     }
 
     if (!upstream.body) {
-        if (inFileSystem) await cleanupOnError(viewPath, "Empty Body received");
+        if (inFileSystem) cleanupOnError(viewPath, "Empty Body received");
         return new Response("Upstream returned empty body", { status: 502 });
     }
 
