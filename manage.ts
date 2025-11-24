@@ -3,7 +3,7 @@
 import { parseArgs } from "@std/cli/parse-args";
 import { addIndexer, getAllIndexers, removeIndexer, toggleIndexer } from "./utils/sqlite.ts";
 
-const PRESETS_URL = "https://raw.githubusercontent.com/mkcfdc/usenetstreamer/main/indexer_presets.json";
+const PRESETS_URL = "https://raw.githubusercontent.com/mkcfdc/UsenetStreamer/refs/heads/master/indexer_presets.json";
 
 const DEFAULT_PRESETS = [
     { name: "NZBGeek", url: "https://api.nzbgeek.info" },
@@ -33,7 +33,7 @@ const command = args._[0];
 async function getPresets() {
     try {
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 3000); // 3s timeout
+        const timeoutId = setTimeout(() => controller.abort(), 3000);
 
         const response = await fetch(PRESETS_URL, { signal: controller.signal });
         clearTimeout(timeoutId);
