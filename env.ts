@@ -33,7 +33,7 @@ export const Config = {
     },
 
     get REDIS_URL() {
-        const val = getOrSetSetting("REDIS_URL", "", "Connection string for Redis");
+        const val = getOrSetSetting("REDIS_URL", "redis://redis:6379", "Connection string for Redis");
         return String(val);
     },
 
@@ -77,7 +77,6 @@ export const Config = {
     },
 
     get NZBDAV_WEBDAV_URL() {
-        // Logic: Use specific WEBDAV_URL, fallback to generic NZBDAV_URL
         const specific = getOrSetSetting("NZBDAV_WEBDAV_URL", "", "Specific WebDAV URL");
         return (specific || this.NZBDAV_URL).trim();
     },
@@ -94,8 +93,6 @@ export const Config = {
         return getOrSetSetting("NZB_CHECK_API_KEY", "", "API key for the NZBCheck Service");
     },
 
-    // --- Hardcoded Logic / Constants (Not in DB) ---
-    // These are unlikely to change or are complex objects
     NZBDAV_POLL_INTERVAL_MS: 2000,
     NZBDAV_POLL_TIMEOUT_MS: 80000,
     NZBDAV_CACHE_TTL_MS: 3600000,

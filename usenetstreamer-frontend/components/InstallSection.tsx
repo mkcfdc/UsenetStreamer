@@ -1,4 +1,3 @@
-// components/config/InstallSection.tsx
 import { useState } from "preact/hooks";
 import { Config } from "../utils/configTypes.ts";
 
@@ -9,24 +8,57 @@ interface Props {
 export function InstallSection({ config }: Props) {
     const [copied, setCopied] = useState(false);
 
-    // 1. Construct the Manifest URL
     const baseUrl = config.ADDON_BASE_URL?.replace(/\/+$/, "") || "";
     const manifestUrl = `${baseUrl}/${config.ADDON_SHARED_SECRET}/manifest.json`;
-
-    // 2. Construct Stremio Protocol URL (Force stremio://)
-    // This triggers the desktop or mobile app directly
     const stremioUrl = manifestUrl.replace(/^https?:\/\//, "stremio://");
-
-    // 3. Construct Stremio Web URL
     const webUrl = `https://web.stremio.com/#/addons?addon=${encodeURIComponent(manifestUrl)}`;
 
     const handleCopy = async () => {
-        try {
-            await navigator.clipboard.writeText(manifestUrl);
+        const text = manifestUrl;
+        let isSuccess = false;
+
+        // 1. Try Modern API (Secure Contexts like HTTPS/Localhost)
+        // We check specifically for the writeText function availability
+        if (navigator?.clipboard?.writeText) {
+            try {
+                await navigator.clipboard.writeText(text);
+                isSuccess = true;
+            } catch (err) {
+                console.warn("Clipboard API failed, attempting fallback...", err);
+            }
+        }
+
+        // 2. Fallback (HTTP / Non-Secure Contexts)
+        // If the modern API failed or didn't exist, we use the textarea hack
+        if (!isSuccess) {
+            try {
+                const textArea = document.createElement("textarea");
+                textArea.value = text;
+
+                // Make it invisible but part of the DOM so it can be selected
+                textArea.style.cssText = "position:fixed;left:-9999px;top:0;opacity:0;";
+
+                document.body.appendChild(textArea);
+                textArea.focus();
+                textArea.select();
+
+                // Execute the copy command
+                const successful = document.execCommand('copy');
+                document.body.removeChild(textArea);
+
+                if (successful) isSuccess = true;
+            } catch (err) {
+                console.error("Fallback copy failed", err);
+            }
+        }
+
+        // 3. Feedback
+        if (isSuccess) {
             setCopied(true);
             setTimeout(() => setCopied(false), 2000);
-        } catch (err) {
-            console.error("Failed to copy", err);
+        } else {
+            // Ultimate fallback if even the textarea hack fails (rare)
+            prompt("Could not auto-copy. Please copy this link manually:", text);
         }
     };
 
@@ -63,7 +95,7 @@ export function InstallSection({ config }: Props) {
                             class="flex flex-col items-center justify-center p-4 rounded-xl border border-pink-500/30 bg-pink-500/10 hover:bg-pink-500/20 transition-all group text-center text-decoration-none"
                         >
                             <div class="mb-3 p-3 rounded-full bg-pink-500/20 text-pink-300 group-hover:scale-110 transition-transform">
-                                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path></svg>
+                                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1 4-10z"></path></svg>
                             </div>
                             <span class="font-bold text-white">Stremio Web</span>
                             <span class="text-xs text-pink-200/70 mt-1">Browser Version</span>
