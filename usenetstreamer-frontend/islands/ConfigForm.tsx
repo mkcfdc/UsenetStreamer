@@ -1,12 +1,11 @@
-// islands/ConfigForm.tsx
 import { useState, useEffect } from "preact/hooks";
 import { Config, IndexingMethod } from "../utils/configTypes.ts";
 import { IndexingSection } from "../components/config/IndexingSection.tsx";
 import { NzbDavSection } from "../components/config/NzbDavSection.tsx";
 import { StremioSection } from "../components/config/StremioSection.tsx";
 import { NzbCheckSection } from "../components/config/NzbCheckSection.tsx";
+import { InstallSection } from "../components/InstallSection.tsx";
 
-// Feature flags are simple enough to keep inline or extract if they grow
 const FeatureFlagsSection = ({ config, onChange }: { config: Config, onChange: (e: Event) => void }) => (
     <fieldset class="mb-10 pb-8 border-b border-white/5">
         <legend class="text-xl font-bold text-teal-400 mb-6">Feature Flags</legend>
@@ -105,6 +104,8 @@ export default function ConfigForm() {
             <StremioSection config={config} onChange={handleChange} />
             <NzbCheckSection config={config} onChange={handleChange} />
             <FeatureFlagsSection config={config} onChange={handleChange} />
+
+            <InstallSection config={config} />
 
             <div class="flex justify-end gap-4 mt-8">
                 <button type="button" onClick={fetchConfig} class="rounded-xl border border-slate-700 bg-slate-800 px-6 py-2.5 text-sm font-semibold text-white hover:bg-slate-700">Reset</button>
