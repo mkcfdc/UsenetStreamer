@@ -1,4 +1,33 @@
 services:
+  usenetstreamer:
+    image: ghcr.io/mkcfdc/usenetstreamer:latest
+    restart: unless-stopped
+    depends_on:
+      nzbdav:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./data:/app/data # This path is used to store the sqlite database, if not using prowlarr or nzbhydra
+    ports:
+      - "7000:7000"
+    env_file:
+      - .env
+    networks:
+      - media
+  redis:
+    image: redis:8.2.3-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks:
+      - media
+    restart: unless-stopped
+
+## YOU CAN USE Prowlarr OR NZBHydra2 AS YOUR USENET INDEXER. REMOVE ONE IF NOT IN USE.
+## Remove both if you plan to use the direct api method with manage cli tool.
 
   prowlarr:
     image: lscr.io/linuxserver/prowlarr
@@ -20,21 +49,9 @@ services:
     networks:
       - media
 
-  usenetstreamer:
-    image: ghcr.io/sanket9225/usenetstreamer:latest
-    container_name: usenetstreamer
-    restart: unless-stopped
-    depends_on:
-      prowlarr:
-        condition: service_healthy
-    ports:
-      - "7000:7000"
-    env_file:
-      - .env
-    networks:
-      - media
 
-## Have your pick of nzbDav or altMount
+## Have your pick of nzbDav or altMount or direct api using the manage cli tool. Details in README.
+## Both cannot be used at the same time.
 
   altmount:
     extra_hosts:
@@ -48,24 +65,19 @@ services:
       - COOKIE_DOMAIN=192.168.0.207
     volumes:
       - ./config:/config
-     # - /mnt:/mnt:rshared # Linux only - see Rclone Mount section for macOS/Windows
     restart: unless-stopped
     networks:
       - media
-
-  redis:
-    image: redis:8.2.3-alpine
-    container_name: usenet_redis
-    ports:
-      - "6379:6379"
-    networks:
-      - media
-    restart: unless-stopped
 
   nzbdav:
     image: nzbdav/nzbdav:alpha
     container_name: nzbdav
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
     ports:
       - "3000:3000"
     environment:
@@ -79,5 +91,3 @@ services:
 networks:
   media:
     driver: bridge
-
-  

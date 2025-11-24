@@ -8,7 +8,7 @@ function getDb(): DatabaseSync {
     // Default to a 'data' subdirectory for Docker mounting
     const dbPath = Deno.env.get("DB_LOCATION") || "./data/nzb_indexers.db";
 
-    console.log(`[Database] Initializing node:sqlite at: ${dbPath}`);
+    console.log(`\n%c[Database] %cInitializing sqlite at: ${dbPath}`, "color: blue;", "color: green;");
 
     const db = new DatabaseSync(dbPath);
 

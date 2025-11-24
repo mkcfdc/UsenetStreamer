@@ -4,11 +4,11 @@ import { REDIS_URL } from "../env.ts";
 export const redis = new Redis(REDIS_URL);
 
 // --- Event Listeners ---
-redis.on("error", (err) => console.error("[Redis] Error:", err));
-redis.on("connect", () => console.log("[Redis] Connected"));
-redis.on("ready", () => console.log("[Redis] Ready"));
-redis.on("reconnecting", () => console.log("[Redis] Reconnecting..."));
-redis.on("close", () => console.warn("[Redis] Connection closed"));
+redis.on("error", (err) => console.error(`%c[Redis] %cError: ${err}`, "color: red;", "color: orange;"));
+redis.on("connect", () => console.log("%c[Redis] %cConnected", "color: red;", "color: green;"));
+redis.on("ready", () => console.log("%c[Redis] %cReady", " color: red;", "color: green;"));
+redis.on("reconnecting", () => console.log("%c[Redis] %cReconnecting...", "color: red;", "color: orange;"));
+redis.on("close", () => console.warn("%c[Redis] Connection closed", "color: red;"));
 
 /**
  * Sets a JSON value at a specific path in RedisJSON using a pipeline for efficiency.
@@ -50,7 +50,7 @@ export async function setJsonValue<T>(
         return response === "OK";
 
     } catch (err) {
-        console.error(`[Redis] Failed to set JSON for ${key}:`, err);
+        console.error(`%c[Redis] %cFailed to set JSON for ${key}: ${err}`, "color: red;", "color: orange;");
         return false;
     }
 }
@@ -77,7 +77,7 @@ export async function getJsonValue<T>(
 
         return parsed as T;
     } catch (e) {
-        console.error(`[Redis] Failed to parse JSON for key ${key} at path ${path}.`, e);
+        console.error(`%c[Redis] %cFailed to parse JSON for key ${key} at path ${path}. ${e}`, "color: red;", "color: orange;");
         return null;
     }
 }
@@ -91,7 +91,7 @@ export async function deleteJsonPath(key: string, path: string): Promise<number>
         const result = await redis.call("JSON.DEL", key, path);
         return Number(result);
     } catch (e) {
-        console.error(`[Redis] Error deleting path ${path} in ${key}:`, e);
+        console.error(`%c[Redis] %cError deleting path ${path} in ${key}: ${e}`, "color: red;", "color: orange;");
         return 0;
     }
 }
