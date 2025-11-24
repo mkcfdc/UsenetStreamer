@@ -4,6 +4,11 @@ on:
   push:
     branches:
       - master
+    paths-ignore:
+      - "usenetstreamer-frontend/**"
+      - ".github/workflows/build-frontend.yml"
+      - "docs/**"
+      - "**.md"
 
 jobs:
   build-and-push:

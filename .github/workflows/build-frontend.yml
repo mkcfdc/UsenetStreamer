@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - master
+    paths:
+      - "usenetstreamer-frontend/**"
+      - ".github/workflows/build-frontend.yml"
 
 jobs:
   build-and-push:
