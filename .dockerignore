@@ -10,3 +10,5 @@ server.js
 docs/
 README.md
 indexer_presets.json
+docker-compose.yml
+usenetstreamer-frontend/
