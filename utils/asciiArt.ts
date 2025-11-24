@@ -1,8 +1,16 @@
 // prettier-ignore
 // deno-fmt-ignore
 
+function getConsoleWidth(defaultWidth = 80): number {
+    try {
+        return Deno.consoleSize().columns;
+    } catch {
+        return defaultWidth;
+    }
+}
+
 function center(text: string): string {
-    const width = Deno.consoleSize().columns;
+    const width = getConsoleWidth();
     return text
         .trimEnd()
         .split("\n")
