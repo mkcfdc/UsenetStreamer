@@ -1,4 +1,4 @@
-import { NZBHYDRA_API_KEY, NZBHYDRA_URL } from "../env.ts";
+import { Config } from "../env.ts";
 import { fetcher } from "../utils/fetcher.ts";
 
 // --- Types based on your JSON snippet ---
@@ -142,7 +142,7 @@ export async function searchHydra(opts: HydraSearchOptions): Promise<HydraResult
     // 3. Execute Searches
     const searchPromises = plans.map(async (plan) => {
         const params = new URLSearchParams({
-            apikey: NZBHYDRA_API_KEY!,
+            apikey: Config.NZBHYDRA_API_KEY!,
             limit,
             offset: "0",
             cat: categoryId,
@@ -150,7 +150,7 @@ export async function searchHydra(opts: HydraSearchOptions): Promise<HydraResult
             ...plan
         });
 
-        const url = `${NZBHYDRA_URL}/api?${params.toString()}`;
+        const url = `${Config.NZBHYDRA_URL}/api?${params.toString()}`;
         const logName = plan.imdbid ? `IMDB:${plan.imdbid}` : plan.tvdbid ? `TVDB:${plan.tvdbid}` : plan.q;
 
         console.log(`[Hydra] Fetching: ${plan.t} -> ${logName}`);

@@ -10,6 +10,10 @@ Usenet stack. The addon searches Usenet indexers via Prowlarr, queues NZB
 downloads in NZBDav or altMount, and exposes the resulting media as Stremio
 streams.
 
+**Disclaimer:** UsenetStreamer is not affiliated with any Usenet provider or
+indexer, does not host or distribute media, and is offered strictly for
+educational purposes.
+
 ### This Version uses Deno. Not Node.
 
 ### Features added:
@@ -45,6 +49,9 @@ streams.
     sites use the nzbnab standard api, we can direct query each index ourselves.
     This makes searching instant with 0 overhead.
     [How to setup direct indexing](docs/manage_cli.md)
+17. Moved all environment variables to the sqlite database, you must enter the
+    running container and run the `manage` command. I will consider making a web
+    UI tomorrow.
 
 ### How to use nzbcheck.filmwhisper.dev:
 

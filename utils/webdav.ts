@@ -1,9 +1,4 @@
-import {
-    NZBDAV_WEBDAV_USER,
-    NZBDAV_WEBDAV_PASS,
-    NZBDAV_WEBDAV_URL,
-    NZBDAV_WEBDAV_ROOT,
-} from "../env.ts";
+import { Config } from "../env.ts";
 
 export type WebdavEntry = {
     name: string;
@@ -19,10 +14,10 @@ export type WebdavClient = {
 };
 
 // 1. Pre-calculate static values once
-const AUTH_HEADER = "Basic " + btoa(`${NZBDAV_WEBDAV_USER}:${NZBDAV_WEBDAV_PASS}`);
+const AUTH_HEADER = "Basic " + btoa(`${Config.NZBDAV_WEBDAV_USER}:${Config.NZBDAV_WEBDAV_PASS}`);
 
-const REMOTE_BASE = NZBDAV_WEBDAV_URL.replace(/\/+$/, "");
-const ROOT_PATH = (NZBDAV_WEBDAV_ROOT || "").replace(/^\/+/, "").replace(/\/+$/, "");
+const REMOTE_BASE = Config.NZBDAV_WEBDAV_URL.replace(/\/+$/, "");
+const ROOT_PATH = (Config.NZBDAV_WEBDAV_ROOT || "").replace(/^\/+/, "").replace(/\/+$/, "");
 const REMOTE_ROOT_URL = ROOT_PATH ? `${REMOTE_BASE}/${ROOT_PATH}` : REMOTE_BASE;
 
 // 2. Pre-compile Regexes

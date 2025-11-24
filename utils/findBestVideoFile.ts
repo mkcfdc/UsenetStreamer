@@ -1,5 +1,5 @@
 import { normalizeNzbdavPath, getWebdavClient } from "./webdav.ts";
-import { NZBDAV_MAX_DIRECTORY_DEPTH, NZBDAV_URL, USE_STRM_FILES } from "../env.ts";
+import { Config } from "../env.ts";
 
 interface FileCandidate {
     name: string;
@@ -26,7 +26,7 @@ const MAX_CONCURRENT_REQUESTS = 5;
 
 export async function findBestVideoFile(params: FindFileParams): Promise<FileCandidate | null> {
     // 1. Check local STRM files first (Fastest)
-    if (USE_STRM_FILES) {
+    if (Config.USE_STRM_FILES) {
         const strmCandidate = await findStrmCandidate(params);
         if (strmCandidate) return strmCandidate;
     }
@@ -68,7 +68,7 @@ async function findStrmCandidate({ category, jobName }: FindFileParams): Promise
 
                 const urlObj = new URL(urlStr);
                 const rawPath = urlObj.searchParams.get("path") || urlObj.pathname.replace("/webdav", "");
-                const publicBaseUrl = NZBDAV_URL.replace(/\/sabnzbd\/?$/, "").replace(/\/$/, "");
+                const publicBaseUrl = Config.NZBDAV_URL.replace(/\/sabnzbd\/?$/, "").replace(/\/$/, "");
                 const viewPath = urlStr.replace(/^https?:\/\/[^/]+/, publicBaseUrl);
 
                 return {
@@ -112,7 +112,7 @@ export async function findWebdavCandidate({ category, jobName, requestedEpisode 
     let bestEpisodeMatch: FileCandidate | null = null;
 
     const processDirectory = async (currentPath: string, depth: number) => {
-        if (depth > NZBDAV_MAX_DIRECTORY_DEPTH || visited.has(currentPath)) return;
+        if (depth > Config.NZBDAV_MAX_DIRECTORY_DEPTH || visited.has(currentPath)) return;
         visited.add(currentPath);
 
         try {

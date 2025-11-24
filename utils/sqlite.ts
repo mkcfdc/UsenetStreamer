@@ -23,11 +23,74 @@ function getDb(): DatabaseSync {
     ) STRICT
   `);
 
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS settings (
+      key TEXT PRIMARY KEY,
+      value TEXT,
+      description TEXT
+    ) STRICT;
+  `);
+
     dbInstance = db;
     return db;
 }
 
 // --- Exported Functions ---
+
+export interface Setting {
+    key: string;
+    value: string;
+    description: string;
+}
+
+export const getAllSettings = (): Setting[] => {
+    const stmt = getDb().prepare("SELECT key, value, description FROM settings ORDER BY key ASC");
+    return stmt.all() as unknown as Setting[];
+};
+
+/**
+ * Retrieves a configuration value following this priority:
+ * 1. System Environment Variable (Overrides everything)
+ * 2. Database Value
+ * 3. Default Value (Persisted to DB if not present)
+ */
+export function getOrSetSetting(key: string, defaultValue: string, description: string = ""): string {
+    // 1. Check System Environment Variable (Highest Priority)
+    // We check this first so you can override DB settings via Docker/CLI without wiping the DB
+    const envVal = Deno.env.get(key);
+    if (envVal !== undefined) {
+        return envVal;
+    }
+
+    const db = getDb();
+
+    // 2. Check Database
+    const row = db.prepare("SELECT value FROM settings WHERE key = ?").get(key) as { value: string } | undefined;
+
+    if (row) {
+        return row.value;
+    }
+
+    // 3. Fallback to Default & Persist to DB
+    // We insert the default so it becomes editable in the DB for next time
+    try {
+        const stmt = db.prepare("INSERT INTO settings (key, value, description) VALUES (?, ?, ?)");
+        stmt.run(key, defaultValue, description);
+    } catch (err) {
+        // Ignore race conditions (SQLITE_CONSTRAINT)
+    }
+
+    return defaultValue;
+}
+
+/**
+ * Updates a setting in the database.
+ * This allows you to build an API endpoint later to update config via UI.
+ */
+export function updateSetting(key: string, value: string) {
+    const db = getDb();
+    db.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(key, value);
+}
 
 export interface Indexer {
     id: number;

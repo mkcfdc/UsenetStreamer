@@ -1,12 +1,12 @@
 import { streamFileResponse } from "../utils/streamFileResponse.ts";
 import { join } from "@std/path";
-import { FAILURE_VIDEO_FILENAME } from "../env.ts";
+import { Config } from "../env.ts";
 
 const FAILURE_VIDEO_PATH = join(
     Deno.cwd(),
     "public",
     "assets",
-    FAILURE_VIDEO_FILENAME
+    Config.FAILURE_VIDEO_FILENAME
 );
 
 export async function streamFailureVideo(

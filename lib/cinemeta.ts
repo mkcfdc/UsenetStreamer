@@ -1,5 +1,5 @@
 // deno-lint-ignore-file no-explicit-any
-import { CINEMETA_URL } from "../env.ts";
+import { Config } from "../env.ts";
 import { fetcher } from "../utils/fetcher.ts";
 
 export interface CinemetaMovie {
@@ -27,7 +27,7 @@ export async function getCinemetaData(
     imdbId?: string
 ): Promise<CinemetaMovie | CinemetaSeries | any> {
 
-    const url = `${CINEMETA_URL}/${type}/${imdbId}.json`;
+    const url = `${Config.CINEMETA_URL}/${type}/${imdbId}.json`;
 
     try {
         const data = await fetcher(url);

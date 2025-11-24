@@ -3,12 +3,7 @@ import { getCinemetaData } from "../lib/cinemeta.ts";
 import { searchHydra } from "../lib/nzbhydra.ts";
 import { searchProwlarr } from "../lib/prowlarr.ts";
 import { searchDirect } from "../lib/nzbnab.ts";
-import {
-    NZBHYDRA_URL,
-    NZBHYDRA_API_KEY,
-    PROWLARR_URL,
-    PROWLARR_API_KEY
-} from "../env.ts";
+import { Config } from "../env.ts";
 
 interface RequestedEpisode {
     imdbid?: string;
@@ -93,7 +88,7 @@ export async function getMediaAndSearchResults(
         let rawResults: SearchResult[] = [];
 
         // OPTION 1: NZBHydra
-        if (NZBHYDRA_URL && NZBHYDRA_API_KEY) {
+        if (Config.NZBHYDRA_URL && Config.NZBHYDRA_API_KEY) {
             console.log(`[Search] Using Provider: NZBHydra2`);
             const hydraResults = await searchHydra(searchOptions);
 
@@ -109,7 +104,7 @@ export async function getMediaAndSearchResults(
             }));
 
             // OPTION 2: Prowlarr
-        } else if (PROWLARR_URL && PROWLARR_API_KEY) {
+        } else if (Config.PROWLARR_URL && Config.PROWLARR_API_KEY) {
             console.log(`[Search] Using Provider: Prowlarr`);
             const prowlarrResults = await searchProwlarr(searchOptions);
             rawResults = prowlarrResults as SearchResult[];

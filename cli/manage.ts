@@ -5,20 +5,26 @@ import {
     closeDb,
     removeIndexer,
     toggleIndexer,
+    updateSetting,
+    getAllSettings,
 } from "../utils/sqlite.ts";
 
 import { displayList } from "./utils/displayList.ts";
 import { log, CSS } from "./utils/log.ts";
 import { validateIndexer } from "./utils/fetchWithTimeout.ts";
-import { runInteractive } from "./interactive/runInteractive.ts";
+import { runInteractive, runInitInteractive } from "./interactive/runInteractive.ts";
 
 
 function printUsage() {
     console.log(`
   %cUsage:%c
-    deno task manage <command> [options]
+    manage <command> [options]
 
   %cCommands:%c
+    init                Start the interactive setup wizard
+    config              Manage system settings
+      list              List all settings
+      set <k> <v>       Set a specific setting
     list                Show all configured indexers
     add                 Add a new indexer
       --name, -n        Name of the indexer
@@ -48,6 +54,30 @@ if (!command) {
 } else {
     try {
         switch (command) {
+            case "init":
+                await runInitInteractive();
+                break;
+
+            case "config": {
+                const subCmd = args._[1]; // get, set, list
+                const key = args._[2] as string;
+                const val = args._[3] || args.value;
+
+                if (subCmd === "list") {
+                    console.table(getAllSettings());
+                } else if (subCmd === "set") {
+                    if (!key || !val) {
+                        log.error("Usage: config set <KEY> <VALUE>");
+                        Deno.exit(1);
+                    }
+                    updateSetting(key, String(val));
+                    log.success(`Set ${key} = ${val}`);
+                } else {
+                    log.error("Usage: config [list|set <key> <val>]");
+                }
+                break;
+            }
+
             case "list":
                 displayList();
                 break;

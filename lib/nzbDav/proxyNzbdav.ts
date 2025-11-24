@@ -5,13 +5,7 @@ https://github.com/panteLx/UsenetStreamer
 */
 
 import { extname } from "@std/path/posix";
-import {
-    VIDEO_MIME_MAP,
-    NZBDAV_WEBDAV_URL,
-    NZBDAV_WEBDAV_USER,
-    NZBDAV_WEBDAV_PASS,
-    USE_STRM_FILES,
-} from "../../env.ts";
+import { Config } from "../../env.ts";
 import { streamFailureVideo } from "../streamFailureVideo.ts";
 
 
@@ -23,7 +17,7 @@ const httpClient = Deno.createHttpClient({
 
 function inferMimeType(fileName: string) {
     const ext = extname(fileName.toLowerCase());
-    return VIDEO_MIME_MAP.get(ext) || "application/octet-stream";
+    return Config.VIDEO_MIME_MAP.get(ext) || "application/octet-stream";
 }
 
 function sanitizeFileName(file: string) {
@@ -52,10 +46,10 @@ export async function proxyNzbdavStream(
     }
 
     let targetUrl: URL;
-    if (USE_STRM_FILES) {
+    if (Config.USE_STRM_FILES) {
         targetUrl = new URL(viewPath);
     } else {
-        const base = NZBDAV_WEBDAV_URL.replace(/\/+$/, "");
+        const base = Config.NZBDAV_WEBDAV_URL.replace(/\/+$/, "");
         targetUrl = new URL(`${base}/${viewPath.replace(/^\/+/, "")}`);
     }
 
@@ -71,8 +65,8 @@ export async function proxyNzbdavStream(
     if (range) requestHeaders.set("Range", range);
     if (ifRange) requestHeaders.set("If-Range", ifRange);
 
-    if (NZBDAV_WEBDAV_USER && NZBDAV_WEBDAV_PASS && !USE_STRM_FILES) {
-        requestHeaders.set("Authorization", `Basic ${btoa(`${NZBDAV_WEBDAV_USER}:${NZBDAV_WEBDAV_PASS}`)}`);
+    if (Config.NZBDAV_WEBDAV_USER && Config.NZBDAV_WEBDAV_PASS && !Config.USE_STRM_FILES) {
+        requestHeaders.set("Authorization", `Basic ${btoa(`${Config.NZBDAV_WEBDAV_USER}:${Config.NZBDAV_WEBDAV_PASS}`)}`);
     }
 
     let upstream: Response;

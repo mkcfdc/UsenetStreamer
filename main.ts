@@ -3,7 +3,7 @@ import "./utils/asciiArt.ts";
 import { join } from "@std/path/posix";
 import { getMediaAndSearchResults } from "./utils/getMediaAndSearchResults.ts";
 
-import { ADDON_BASE_URL, NZBHYDRA_API_KEY, NZBHYDRA_URL, PORT, } from "./env.ts";
+import { Config, validateConfig } from "./env.ts";
 import { md5 } from "./utils/md5Encoder.ts";
 import { streamNzbdavProxy } from "./lib/nzbDav/nzbDav.ts";
 import { parseRequestedEpisode } from "./utils/parseRequestedEpisode.ts";
@@ -100,7 +100,7 @@ async function handler(req: Request): Promise<Response> {
             version: "1.0.1",
             name: "UsenetStreamer",
             description: "Usenet-powered instant streams for Stremio via Prowlarr and NZBDav",
-            logo: `${ADDON_BASE_URL.replace(/\/$/, "")}/assets/icon.png`,
+            logo: `${Config.ADDON_BASE_URL.replace(/\/$/, "")}/assets/icon.png`,
             resources: ["stream"],
             types: ["movie", "series"],
             catalogs: [],
@@ -211,7 +211,7 @@ async function handler(req: Request): Promise<Response> {
                 streams.push({
                     name: `${getResolutionIcon(r.resolution)} ${prefix} ${r.resolution}`,
                     title: r.lines,
-                    url: `${ADDON_BASE_URL}/${Deno.env.get("ADDON_SHARED_SECRET")}/nzb/stream/${hash}`,
+                    url: `${Config.ADDON_BASE_URL}/${Deno.env.get("ADDON_SHARED_SECRET")}/nzb/stream/${hash}`,
                     size: r.size,
                 });
 
@@ -350,8 +350,8 @@ function getResolutionIcon(resolution: string): string {
 
 function extractGuidFromUrl(urlString: string): string | undefined {
 
-    if (typeof NZBHYDRA_URL !== 'undefined' && NZBHYDRA_URL &&
-        typeof NZBHYDRA_API_KEY !== 'undefined' && NZBHYDRA_API_KEY) {
+    if (typeof Config.NZBHYDRA_URL !== 'undefined' && Config.NZBHYDRA_URL &&
+        typeof Config.NZBHYDRA_API_KEY !== 'undefined' && Config.NZBHYDRA_API_KEY) {
         return urlString;
     }
 
@@ -369,5 +369,26 @@ function extractGuidFromUrl(urlString: string): string | undefined {
     }
 }
 
+const missingKeys = validateConfig();
+const port = Config.PORT;
 
-Deno.serve({ port: Number(PORT) }, handler);
+if (missingKeys.length > 0) {
+    // --- MAINTENANCE MODE ---
+    console.error("❌ CRITICAL CONFIGURATION MISSING");
+    console.error(`Missing: ${missingKeys.join(", ")}`);
+    console.error("⚠️  Server started in MAINTENANCE MODE.");
+    console.error(`    Run: manage`);
+
+    Deno.serve({ port }, (_req) => {
+        const currentMissing = validateConfig();
+        return new Response(
+            `[System Maintenance] Configuration required.\n\nMissing keys:\n${currentMissing.join("\n")}\n\n
+            Use the manage cli tool to finish your configuration!`,
+            { status: 503 }
+        );
+    });
+
+} else {
+    console.log("✅ %cConfiguration valid. Starting application...", "color: green");
+    Deno.serve({ port }, handler);
+}

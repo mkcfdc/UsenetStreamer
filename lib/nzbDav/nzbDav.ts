@@ -17,19 +17,7 @@ import { updateNzbStatus } from "../nzbcheck.ts";
 import type { EpisodeInfo } from "../../utils/parseRequestedEpisode.ts";
 import { fetcher } from "../../utils/fetcher.ts";
 
-import {
-    NZBDAV_POLL_TIMEOUT_MS,
-    NZBDAV_URL,
-    NZBDAV_API_KEY,
-    NZBDAV_API_TIMEOUT_MS,
-    NZBDAV_POLL_INTERVAL_MS,
-    NZBDAV_CACHE_TTL_MS,
-    STREAM_METADATA_CACHE_TTL_MS,
-    NZBDAV_CACHE_MAX_ITEMS,
-    STREAM_METADATA_CACHE_MAX_ITEMS,
-    ADDON_BASE_URL,
-    USE_STRM_FILES,
-} from "../../env.ts";
+import { Config } from "../../env.ts";
 
 
 interface StreamCache {
@@ -84,13 +72,13 @@ class NzbdavError extends Error {
 }
 
 const nzbdavStreamCache = new LRU<string, { status: "ready" | "pending" | "failed"; data?: StreamResult; promise?: Promise<StreamResult>; error?: any }>({
-    max: NZBDAV_CACHE_MAX_ITEMS,
-    ttl: NZBDAV_CACHE_TTL_MS,
+    max: Config.NZBDAV_CACHE_MAX_ITEMS,
+    ttl: Config.NZBDAV_CACHE_TTL_MS,
 });
 
 const streamMetadataCache = new LRU<string, { data: StreamCache }>({
-    max: STREAM_METADATA_CACHE_MAX_ITEMS,
-    ttl: STREAM_METADATA_CACHE_TTL_MS,
+    max: Config.STREAM_METADATA_CACHE_MAX_ITEMS,
+    ttl: Config.STREAM_METADATA_CACHE_TTL_MS,
 });
 
 /**
@@ -131,11 +119,11 @@ export async function fetchNzbdav<T = any>(
 
     const finalParams = buildNzbdavApiParams(mode, cleanParams as Record<string, any>);
 
-    const data = await fetcher<any>(`${NZBDAV_URL}/api`, {
+    const data = await fetcher<any>(`${Config.NZBDAV_URL}/api`, {
         params: finalParams,
         timeoutMs,
         headers: {
-            "X-API-KEY": NZBDAV_API_KEY || "",
+            "X-API-KEY": Config.NZBDAV_API_KEY || "",
         },
     });
 
@@ -195,7 +183,7 @@ async function addNzbToNzbdav(nzbUrl: string, category: string, jobLabel: string
         name: nzbUrl,
         cat: category,
         nzbname: jobName,
-    }, NZBDAV_API_TIMEOUT_MS);
+    }, Config.NZBDAV_API_TIMEOUT_MS);
 
     if (!json?.status) {
         throw new Error(`[NZBDAV] Failed to queue NZB: Status missing`);
@@ -217,9 +205,9 @@ export async function waitForNzbdavHistorySlot(
     category: string,
     signal?: AbortSignal
 ): Promise<NzbHistorySlot> {
-    const deadline = Date.now() + NZBDAV_POLL_TIMEOUT_MS;
-    let currentInterval = NZBDAV_POLL_INTERVAL_MS;
-    const MAX_INTERVAL = NZBDAV_POLL_TIMEOUT_MS; // Cap polling at 10 seconds == more time is needed for the 4k files.
+    const deadline = Date.now() + Config.NZBDAV_POLL_TIMEOUT_MS;
+    let currentInterval = Config.NZBDAV_POLL_INTERVAL_MS;
+    const MAX_INTERVAL = Config.NZBDAV_POLL_TIMEOUT_MS; // Cap polling at 10 seconds == more time is needed for the 4k files.
 
     console.debug(`[NZBDAV] Polling history for ${nzoId}.`);
 
@@ -290,7 +278,7 @@ async function buildNzbdavStream(params: {
     // 1. Determine correct Job Name logic
     // If using AltMount, we force the use of the MD5 hash as the job name.
     // This ensures the folder on disk matches what we search for, preventing "Human Title" vs "Hash" mismatches.
-    const isAltMount = NZBDAV_URL.includes("altmount");
+    const isAltMount = Config.NZBDAV_URL.includes("altmount");
     const intendedJobName = isAltMount ? md5(downloadUrl) : title;
 
     // 2. Check Persistence Cache (Redis)
@@ -306,13 +294,13 @@ async function buildNzbdavStream(params: {
     const existingFile = await findBestVideoFile({ category, jobName: intendedJobName, requestedEpisode });
 
     if (existingFile?.viewPath) {
-        const typeLabel = USE_STRM_FILES ? "STRM" : isAltMount ? "AltMount" : "NZBDAV";
+        const typeLabel = Config.USE_STRM_FILES ? "STRM" : isAltMount ? "AltMount" : "NZBDAV";
         console.log(`[${typeLabel}] Pre-cache hit: ${existingFile.viewPath}`);
 
         const result: StreamResult = {
             viewPath: existingFile.viewPath,
             fileName: existingFile.viewPath.split("/").pop() ?? "video.mkv",
-            inFileSystem: !USE_STRM_FILES,
+            inFileSystem: !Config.USE_STRM_FILES,
             category,
             jobName: intendedJobName
         };
@@ -322,7 +310,7 @@ async function buildNzbdavStream(params: {
     }
 
     // 4. Proxy Download (Add to NZBDav) 
-    const proxyUrl = `${ADDON_BASE_URL}/nzb/proxy/${md5(downloadUrl)}.nzb`;
+    const proxyUrl = `${Config.ADDON_BASE_URL}/nzb/proxy/${md5(downloadUrl)}.nzb`;
     // Pass intendedJobName (hash if altmount) instead of title
     const { nzoId } = await addNzbToNzbdav(proxyUrl, category, intendedJobName);
 

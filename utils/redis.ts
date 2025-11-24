@@ -1,7 +1,7 @@
 import { Redis } from "ioredis";
-import { REDIS_URL } from "../env.ts";
+import { Config } from "../env.ts";
 
-export const redis = new Redis(REDIS_URL);
+export const redis = new Redis(Config.REDIS_URL);
 
 // --- Event Listeners ---
 redis.on("error", (err) => console.error(`%c[Redis] %cError: ${err}`, "color: red;", "color: orange;"));

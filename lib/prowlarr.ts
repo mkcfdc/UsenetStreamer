@@ -1,4 +1,4 @@
-import { PROWLARR_API_KEY, PROWLARR_URL } from "../env.ts";
+import { Config } from "../env.ts";
 import { fetcher } from "../utils/fetcher.ts";
 
 interface ProwlarrSearchOptions {
@@ -120,7 +120,7 @@ export async function searchProwlarr(opts: ProwlarrSearchOptions): Promise<Prowl
     // 3. Execute Searches in Parallel
     const searchPromises = uniquePlans.map(async (plan) => {
         const params = new URLSearchParams({
-            apikey: PROWLARR_API_KEY!,
+            apikey: Config.PROWLARR_API_KEY!,
             limit,
             offset: "0",
             indexerIds: "-1",
@@ -132,7 +132,7 @@ export async function searchProwlarr(opts: ProwlarrSearchOptions): Promise<Prowl
             ...(opts.episode && { ep: String(opts.episode) }),
         });
 
-        const url = `${PROWLARR_URL}/api/v1/search?${params.toString()}`;
+        const url = `${Config.PROWLARR_URL}/api/v1/search?${params.toString()}`;
         console.log(`[Prowlarr] Fetching: ${plan.type} -> ${plan.query}`);
 
         try {
