@@ -12,6 +12,6 @@ RUN deno task build
 
 EXPOSE 8000
 
-RUN mkdir -p /app/data && chown -R deno:deno /app/data
+RUN mkdir -p /app/data
 
 CMD ["deno", "task", "start"]
