@@ -14,6 +14,4 @@ EXPOSE 8000
 
 RUN mkdir -p /app/data && chown -R deno:deno /app/data
 
-USER deno
-
 CMD ["deno", "task", "start"]
