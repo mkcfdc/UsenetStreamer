@@ -9,16 +9,97 @@ interface Props {
 
 export function StremioSection({ config, onChange }: Props) {
     const [showSecret, setShowSecret] = useState(false);
+    const [testing, setTesting] = useState(false);
+    const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
+
+    const handleTestManifest = async () => {
+        setTesting(true);
+        setTestResult(null);
+
+        // Basic Validation
+        if (!config.ADDON_BASE_URL || !config.ADDON_SHARED_SECRET) {
+            alert("Please enter Base URL and Secret before testing.");
+            setTesting(false);
+            return;
+        }
+
+        if (!config.ADDON_BASE_URL.startsWith("https://")) {
+            setTestResult({
+                success: false,
+                message: "Stremio requires HTTPS. Your URL starts with http://"
+            });
+            setTesting(false);
+            return;
+        }
+
+        try {
+            const response = await fetch("/api/test_connection", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    ADDON_BASE_URL: config.ADDON_BASE_URL,
+                    ADDON_SHARED_SECRET: config.ADDON_SHARED_SECRET
+                }),
+            });
+
+            const data = await response.json();
+
+            // Check the specific stremio result key from our API
+            if (data.stremio) {
+                setTestResult(data.stremio);
+            } else {
+                throw new Error("Invalid response from server");
+            }
+
+        } catch (error: any) {
+            console.error("Test failed", error);
+            setTestResult({ success: false, message: "Server Error: " + error.message });
+        } finally {
+            setTesting(false);
+        }
+    };
 
     return (
         <fieldset class="mb-10 pb-8 border-b border-white/5">
-            <legend class="text-xl font-bold text-teal-400 mb-6">Stremio Addon</legend>
+            <div class="flex items-center justify-between mb-6">
+                <legend class="text-xl font-bold text-teal-400">Stremio Addon</legend>
+                <button
+                    type="button"
+                    onClick={handleTestManifest}
+                    disabled={testing || !config.ADDON_BASE_URL}
+                    class="inline-flex items-center gap-2 px-4 py-1.5 rounded-lg bg-teal-500/10 text-teal-400 border border-teal-500/20 hover:bg-teal-500/20 transition-all text-sm font-medium disabled:opacity-50"
+                >
+                    {testing ? (
+                        <div class="animate-spin h-4 w-4 border-2 border-current border-t-transparent rounded-full"></div>
+                    ) : (
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>
+                    )}
+                    Test Manifest
+                </button>
+            </div>
+
+            {/* Test Result Display */}
+            {testResult && (
+                <div class={`mb-6 p-3 rounded-lg border ${testResult.success ? 'bg-green-500/10 border-green-500/30 text-green-300' : 'bg-red-500/10 border-red-500/30 text-red-300'}`}>
+                    <div class="flex items-center gap-2 font-bold text-sm mb-1">
+                        {testResult.success ? (
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+                        ) : (
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                        )}
+                        {testResult.success ? "Verification Successful" : "Verification Failed"}
+                    </div>
+                    <div class="text-xs opacity-90">{testResult.message}</div>
+                </div>
+            )}
+
             <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div>
                     <label htmlFor="ADDON_BASE_URL" class="block text-sm font-medium text-slate-300 mb-2">Base URL</label>
                     <input type="url" id="ADDON_BASE_URL" name="ADDON_BASE_URL" value={config.ADDON_BASE_URL} onChange={onChange} required
+                        placeholder="https://my-addon.duckdns.org"
                         class="w-full p-3 rounded-lg bg-slate-800 border border-white/10 text-white focus:ring-2 focus:ring-teal-500 outline-none" />
-                    <p class="mt-2 text-xs text-slate-500">Must be HTTPS.</p>
+                    <p class="mt-2 text-xs text-slate-500">Must be public HTTPS (e.g., via DuckDNS + Nginx/Traefik).</p>
                 </div>
                 <div>
                     <label htmlFor="ADDON_SHARED_SECRET" class="block text-sm font-medium text-slate-300 mb-2">Shared Secret</label>
