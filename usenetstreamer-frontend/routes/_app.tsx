@@ -7,7 +7,7 @@ export default define.page(function App({ Component }) {
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <title>UsenetStreamer</title>
-        <link rel="stylesheet" href="/styles.css" />
+        <link rel="stylesheet" href="/assets/styles.css" />
       </head>
       {/* Switched selection color to sky-500 */}
       <body class="bg-slate-950 text-slate-200 antialiased selection:bg-sky-500 selection:text-white">
