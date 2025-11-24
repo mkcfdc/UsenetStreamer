@@ -1,7 +1,7 @@
 // deno-lint-ignore-file no-explicit-any
 // manage.ts
 import { parseArgs } from "@std/cli/parse-args";
-import { addIndexer, getAllIndexers, removeIndexer, toggleIndexer } from "./utils/sqlite.ts";
+import { addIndexer, getAllIndexers, removeIndexer, toggleIndexer, closeDb } from "./utils/sqlite.ts";
 
 const PRESETS_URL = "https://raw.githubusercontent.com/mkcfdc/UsenetStreamer/refs/heads/master/indexer_presets.json";
 
@@ -262,6 +262,7 @@ async function runInteractive() {
 
             case "q":
                 console.clear();
+                closeDb();
                 console.log("%cBye! 👋", STYLE.title);
                 Deno.exit(0);
                 break;
@@ -290,6 +291,7 @@ switch (command) {
     case "add": {
         if (!args.name || !args.url || !args.key) {
             console.error("%c❌ Error: Missing required flags. Need --name, --url, and --key", STYLE.error);
+            closeDb();
             Deno.exit(1);
         }
 
@@ -298,6 +300,7 @@ switch (command) {
 
         if (!isValid) {
             console.error(`%c❌ Connection Failed! Could not validate ${args.name}. Check URL and API Key.`, STYLE.error);
+            closeDb();
             Deno.exit(1);
         }
 
@@ -314,6 +317,7 @@ switch (command) {
         const id = args._[1] || args.id;
         if (!id) {
             console.error("%c❌ Error: Missing ID. Usage: remove <id>", STYLE.error);
+            closeDb();
             Deno.exit(1);
         }
         removeIndexer(Number(id));

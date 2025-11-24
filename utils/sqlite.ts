@@ -62,3 +62,10 @@ export const toggleIndexer = (id: number, enabled: boolean) => {
     const stmt = getDb().prepare("UPDATE indexers SET enabled = ? WHERE id = ?");
     stmt.run(enabled ? 1 : 0, id);
 };
+
+export const closeDb = () => {
+    if (dbInstance) {
+        dbInstance.close();
+        dbInstance = null;
+    }
+};
