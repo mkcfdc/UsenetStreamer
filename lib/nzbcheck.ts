@@ -1,8 +1,9 @@
 import type { SearchResult } from "../utils/getMediaAndSearchResults.ts";
 import { fetcher } from "../utils/fetcher.ts";
+import { Config } from "../env.ts";
 
-const NZB_CHECK_URL = Deno.env.get("NZB_CHECK_URL");
-const NZB_CHECK_API_KEY = Deno.env.get("NZB_CHECK_API_KEY");
+const NZB_CHECK_URL = Config.NZB_CHECK_URL;
+const NZB_CHECK_API_KEY = Config.NZB_CHECK_API_KEY;
 
 interface NzbCheckItem {
     source_indexer: string;
