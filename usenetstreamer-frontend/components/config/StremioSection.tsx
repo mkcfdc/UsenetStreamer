@@ -1,4 +1,3 @@
-// components/config/StremioSection.tsx
 import { useState } from "preact/hooks";
 import { Config } from "../../utils/configTypes.ts";
 
@@ -12,11 +11,25 @@ export function StremioSection({ config, onChange }: Props) {
     const [testing, setTesting] = useState(false);
     const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
 
+    const generateSecret = () => {
+        const uuid = crypto.randomUUID();
+
+        const event = {
+            target: {
+                name: "ADDON_SHARED_SECRET",
+                value: uuid,
+                type: "text",
+            }
+        } as unknown as Event;
+
+        onChange(event);
+        setShowSecret(true);
+    };
+
     const handleTestManifest = async () => {
         setTesting(true);
         setTestResult(null);
 
-        // Basic Validation
         if (!config.ADDON_BASE_URL || !config.ADDON_SHARED_SECRET) {
             alert("Please enter Base URL and Secret before testing.");
             setTesting(false);
@@ -33,7 +46,7 @@ export function StremioSection({ config, onChange }: Props) {
         }
 
         try {
-            const response = await fetch("/api/test_connection", {
+            const response = await fetch("/api/test_manifest", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
@@ -43,13 +56,7 @@ export function StremioSection({ config, onChange }: Props) {
             });
 
             const data = await response.json();
-
-            // Check the specific stremio result key from our API
-            if (data.stremio) {
-                setTestResult(data.stremio);
-            } else {
-                throw new Error("Invalid response from server");
-            }
+            setTestResult(data);
 
         } catch (error: any) {
             console.error("Test failed", error);
@@ -103,13 +110,43 @@ export function StremioSection({ config, onChange }: Props) {
                 </div>
                 <div>
                     <label htmlFor="ADDON_SHARED_SECRET" class="block text-sm font-medium text-slate-300 mb-2">Shared Secret</label>
-                    <div class="relative">
-                        <input type={showSecret ? "text" : "password"} id="ADDON_SHARED_SECRET" name="ADDON_SHARED_SECRET" value={config.ADDON_SHARED_SECRET} onChange={onChange} required
-                            class="w-full p-3 pr-10 rounded-lg bg-slate-800 border border-white/10 text-white focus:ring-2 focus:ring-teal-500 outline-none" />
-                        <button type="button" onClick={() => setShowSecret(!showSecret)} class="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-white">
-                            {showSecret ? "Hide" : "Show"}
+                    <div class="flex gap-2">
+                        <div class="relative flex-1">
+                            <input
+                                type={showSecret ? "text" : "password"}
+                                id="ADDON_SHARED_SECRET"
+                                name="ADDON_SHARED_SECRET"
+                                value={config.ADDON_SHARED_SECRET}
+                                onChange={onChange}
+                                required
+                                class="w-full p-3 pr-10 rounded-lg bg-slate-800 border border-white/10 text-white focus:ring-2 focus:ring-teal-500 outline-none"
+                            />
+                            <button
+                                type="button"
+                                onClick={() => setShowSecret(!showSecret)}
+                                class="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-white"
+                                title={showSecret ? "Hide" : "Show"}
+                            >
+                                {showSecret ? (
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"></path><path d="m2.929 2.929 18.142 18.142"></path></svg>
+                                ) : (
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+                                )}
+                            </button>
+                        </div>
+
+                        {/* Generate Button */}
+                        <button
+                            type="button"
+                            onClick={generateSecret}
+                            class="px-4 py-2 rounded-lg bg-teal-600/20 text-teal-400 border border-teal-600/30 hover:bg-teal-600/30 transition-all whitespace-nowrap font-medium text-sm flex items-center gap-2"
+                            title="Generate a new UUID"
+                        >
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><path d="M3 3v5h5"></path><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"></path><path d="M16 21h5v-5"></path></svg>
+                            Generate
                         </button>
                     </div>
+                    <p class="mt-2 text-xs text-slate-500">Your API Key for Stremio addon manifest.</p>
                 </div>
             </div>
         </fieldset>

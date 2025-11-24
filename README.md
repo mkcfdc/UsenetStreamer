@@ -50,8 +50,11 @@ educational purposes.
     This makes searching instant with 0 overhead.
     [How to setup direct indexing](docs/manage_cli.md)
 17. Moved all environment variables to the sqlite database, you must enter the
-    running container and run the `manage` command. I will consider making a web
-    UI tomorrow.
+    running container and run the `manage` command.
+18. Built a setup UI using Deno Fresh2. Very clean, fast. It's React with Deno
+    flavour. File structure is a little strange. The frontend container only
+    needs to be ran when you are configuring the addon, after you're done you
+    can remove it.
 
 ### How to use nzbcheck.filmwhisper.dev:
 

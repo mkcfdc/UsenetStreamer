@@ -15,6 +15,7 @@ services:
       - .env
     networks:
       - media
+  ### YOU ONLY NEED THE FRONTEND FOR CONFIGURATION.... AFTER YOUR CONFIGURED, YOU CAN REMOVE IT.
   usenetstreamer-frontend:
     image: ghcr.io/mkcfdc/usenetstreamer-frontend:latest
     restart: unless-stopped
