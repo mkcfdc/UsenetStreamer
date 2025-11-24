@@ -8,11 +8,23 @@ services:
       redis:
         condition: service_healthy
     volumes:
-      - ./data:/app/data # This path is used to store the sqlite database, if not using prowlarr or nzbhydra
+      - ./data:/app/data
     ports:
       - "7000:7000"
     env_file:
       - .env
+    networks:
+      - media
+  usenetstreamer-frontend:
+    image: ghcr.io/mkcfdc/usenetstreamer-frontend:latest
+    restart: unless-stopped
+    depends_on:
+      usenetstreamer:
+        condition: service_started
+    volumes:
+      - ./data:/app/data
+    ports:
+      - "8000:8000"
     networks:
       - media
   redis:

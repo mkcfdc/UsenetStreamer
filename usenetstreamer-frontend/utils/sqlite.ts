@@ -1,14 +1,14 @@
 import { DatabaseSync } from "node:sqlite";
 // deno-lint-ignore no-import-prefix
-import { dirname, fromFileUrl, join } from "jsr:@std/path@1.1.3";
+import { join } from "jsr:@std/path@1.1.3";
 
 let dbInstance: DatabaseSync | null = null;
 
 function getDb(): DatabaseSync {
     if (dbInstance) return dbInstance;
 
-    const projectRoot = dirname(dirname(fromFileUrl(import.meta.url)));
-    const dataDir = join(projectRoot, "data");
+    const dataDir = Deno.env.get("DATA_DIR") || join(Deno.cwd(), "data");
+
     const dbFileName = Deno.env.get("DB_FILENAME") || "nzb_indexers.db";
     const dbPath = join(dataDir, dbFileName);
 
