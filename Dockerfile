@@ -2,11 +2,13 @@ FROM denoland/deno:alpine
 
 WORKDIR /app
 
-# Copy only what’s needed
 COPY . .
 
-# Pre-cache dependencies
 RUN mkdir -p /app/data && deno cache main.ts
+RUN echo '#!/bin/sh' > /usr/local/bin/manage && \
+    echo 'cd /app' >> /usr/local/bin/manage && \
+    echo 'exec deno task manage "$@"' >> /usr/local/bin/manage && \
+    chmod +x /usr/local/bin/manage
 
 EXPOSE 7000
 
