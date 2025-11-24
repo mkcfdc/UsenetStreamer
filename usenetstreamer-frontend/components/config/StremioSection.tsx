@@ -12,7 +12,20 @@ export function StremioSection({ config, onChange }: Props) {
     const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
 
     const generateSecret = () => {
-        const uuid = crypto.randomUUID();
+        const generateUUID = () => {
+            // Try standard crypto API first (HTTPS). We will probably never run this in a secure environment.. so lets make our own.
+            if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+                return crypto.randomUUID();
+            }
+
+            // Fallback for HTTP
+            return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+                const r = Math.random() * 16 | 0;
+                const v = c === 'x' ? r : (r & 0x3 | 0x8);
+                return v.toString(16);
+            });
+        };
+        const uuid = generateUUID();
 
         const event = {
             target: {
@@ -46,7 +59,7 @@ export function StremioSection({ config, onChange }: Props) {
         }
 
         try {
-            const response = await fetch("/api/test_manifest", {
+            const response = await fetch("/api/test_connection", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
