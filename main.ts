@@ -91,7 +91,7 @@ async function handler(req: Request): Promise<Response> {
     if (manifestMatch && method === "GET") {
         const { apiKey } = manifestMatch.pathname.groups;
 
-        if (apiKey !== Deno.env.get("ADDON_SHARED_SECRET")) {
+        if (apiKey !== Config.ADDON_SHARED_SECRET) {
             return jsonResponse({ error: "Unauthorized" }, 401);
         }
 
@@ -114,7 +114,7 @@ async function handler(req: Request): Promise<Response> {
         const { apiKey, type, encodedParams } = streamMatch.pathname.groups;
 
         if (type !== "movie" && type !== "series") return jsonResponse({ error: "Invalid media type" }, 400);
-        if (apiKey !== Deno.env.get("ADDON_SHARED_SECRET")) return jsonResponse({ error: "Unauthorized" }, 401);
+        if (apiKey !== Config.ADDON_SHARED_SECRET) return jsonResponse({ error: "Unauthorized" }, 401);
 
         try {
             const decoded = decodeURIComponent(encodedParams!).replace(".json", "");
@@ -211,7 +211,7 @@ async function handler(req: Request): Promise<Response> {
                 streams.push({
                     name: `${getResolutionIcon(r.resolution)} ${prefix} ${r.resolution}`,
                     title: r.lines,
-                    url: `${Config.ADDON_BASE_URL}/${Deno.env.get("ADDON_SHARED_SECRET")}/nzb/stream/${hash}`,
+                    url: `${Config.ADDON_BASE_URL}/${Config.ADDON_SHARED_SECRET}/nzb/stream/${hash}`,
                     size: r.size,
                 });
 
@@ -248,7 +248,7 @@ async function handler(req: Request): Promise<Response> {
     if (nzbStreamMatch && (method === "GET" || method === "HEAD")) {
         const { apiKey, key } = nzbStreamMatch.pathname.groups;
 
-        if (apiKey !== Deno.env.get("ADDON_SHARED_SECRET")) {
+        if (apiKey !== Config.ADDON_SHARED_SECRET) {
             return jsonResponse({ error: "Unauthorized" }, 401);
         }
 
