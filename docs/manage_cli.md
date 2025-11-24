@@ -42,13 +42,13 @@ docker compose exec -it usenetstreamer sh
 Then just use the cli:
 
 ```sh
-manage manage add --name <NAME OF INDEX> --url <https://api.indexer.com> --key <YOUR API KEY>
+manage add --name <NAME OF INDEX> --url <https://api.indexer.com> --key <YOUR API KEY>
 ```
 
 You can also list current indexers:
 
 ```sh
-deno task manage list
+manage list
 ```
 
 And you can remove/enable/disable them as needed.
