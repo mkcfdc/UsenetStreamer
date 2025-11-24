@@ -1,7 +1,7 @@
 {
   "tasks": {
     "dev": "deno run --allow-env --allow-net --allow-read --env-file=.env main.ts",
-    "manage": "deno run --allow-all manage.ts"
+    "manage": "deno run --allow-all cli/manage.ts"
   },
   "imports": {
     "@ctrl/video-filename-parser": "npm:@ctrl/video-filename-parser@^5.4.1",
