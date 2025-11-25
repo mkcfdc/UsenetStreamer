@@ -1,0 +1,8 @@
+.git
+.env
+_fresh/
+node_modules/
+dist/
+coverage/
+README.md
+**/*.test.ts
