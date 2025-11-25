@@ -24,8 +24,6 @@ COPY --from=builder --chown=deno:deno /app/_fresh ./_fresh
 
 COPY --from=builder --chown=deno:deno /app/static ./static
 
-RUN deno install
-
 EXPOSE 8000
 
 
