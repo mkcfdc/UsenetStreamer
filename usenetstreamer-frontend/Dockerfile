@@ -27,4 +27,4 @@ COPY --from=builder --chown=deno:deno /app/static ./static
 EXPOSE 8000
 
 
-CMD ["deno", "task", "start"]
+CMD ["deno", "serve", "-A", "_fresh/server.js"]
