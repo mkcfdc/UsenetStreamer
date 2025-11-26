@@ -1,18 +1,22 @@
 import { Handlers } from "$fresh/server.ts";
 import { connect } from "@db/redis";
 
+const jsonStringify = (data: any) => {
+    return JSON.stringify(data, (_key, value) =>
+        typeof value === 'bigint' ? value.toString() : value
+    );
+};
+
 export const handler: Handlers = {
     async POST(req) {
+        let client;
         try {
             const body = await req.json();
             const { REDIS_URL } = body;
 
-            if (!REDIS_URL) {
-                throw new Error("Missing REDIS_URL");
-            }
+            if (!REDIS_URL) throw new Error("Missing REDIS_URL");
 
-            // 1. Parse the Connection String manually
-            // (Native driver expects an object, not a string)
+            // 2. Parse the Redis URL
             let url: URL;
             try {
                 url = new URL(REDIS_URL);
@@ -20,66 +24,52 @@ export const handler: Handlers = {
                 throw new Error("Invalid URL format");
             }
 
-            const options: any = {
+            const useTls = url.protocol === "rediss:";
+
+            const options = {
                 hostname: url.hostname,
                 port: url.port ? parseInt(url.port) : 6379,
+                password: url.password || undefined,
+                username: url.username || undefined,
+                tls: useTls,
             };
 
-            // Handle Auth
-            if (url.password) options.password = url.password;
-            if (url.username) options.username = url.username; // For ACL users
+            const timeoutPromise = new Promise((_, reject) =>
+                setTimeout(() => reject(new Error("Connection timed out (5s)")), 5000)
+            );
 
-            // Handle TLS (rediss://)
-            if (url.protocol === "rediss:") {
-                options.tls = true;
-                // If you use self-signed certs (e.g. internal docker), you might need to exclude this line
-                // or ensure your container trusts the CA.
+            client = await Promise.race([
+                connect(options),
+                timeoutPromise
+            ]) as Awaited<ReturnType<typeof connect>>;
+
+            const pong = await client.ping();
+
+            client.close();
+
+            if (pong !== "PONG") {
+                throw new Error(`Unexpected response: ${pong}`);
             }
 
-            let redis;
-            try {
-                // 2. Connect with a strict 5-second timeout
-                // We race the connection promise against a timer so the UI doesn't hang
-                const timeoutPromise = new Promise((_, reject) =>
-                    setTimeout(() => reject(new Error("Connection timed out (5s)")), 5000)
-                );
-
-                redis = await Promise.race([
-                    connect(options),
-                    timeoutPromise
-                ]) as any;
-
-            } catch (err: any) {
-                // If connection fails (e.g. wrong host), return the error message
-                throw new Error(`Connection failed: ${err.message}`);
-            }
-
-            // 3. Ping and Close
-            try {
-                const pong = await redis.ping();
-                await redis.close();
-
-                if (pong !== "PONG") {
-                    throw new Error(`Unexpected response: ${pong}`);
-                }
-
-                return new Response(JSON.stringify({
-                    success: true,
-                    message: "Successfully connected and PINGed Redis."
-                }), { headers: { "Content-Type": "application/json" } });
-
-            } catch (pingErr: any) {
-                // Ensure we close if ping fails
-                redis.close();
-                throw pingErr;
-            }
+            return new Response(jsonStringify({
+                success: true,
+                message: "Successfully connected and PINGed Redis."
+            }), {
+                headers: { "Content-Type": "application/json" }
+            });
 
         } catch (error: any) {
-            // Return 200 so the frontend can parse the JSON error message safely
-            return new Response(JSON.stringify({
+            if (client) {
+                try { client.close(); } catch { }
+            }
+
+            console.error("Redis Test Error:", error);
+
+            return new Response(jsonStringify({
                 success: false,
-                message: error.message
+                message: error instanceof Error ? error.message : String(error)
             }), {
+                status: 200,
                 headers: { "Content-Type": "application/json" }
             });
         }
