@@ -1,61 +1,60 @@
-import { connect } from "@db/redis";
+import { Handlers } from "fresh/server.ts";
+import Redis from "ioredis";
 
-export const handler = async (req: Request): Promise<Response> => {
-    if (req.method !== "POST") return new Response("Method Not Allowed", { status: 405 });
-
-    try {
-        const { REDIS_URL } = await req.json();
-
-        if (!REDIS_URL) throw new Error("Missing REDIS_URL");
-
-        let url: URL;
+export const handler: Handlers = {
+    async POST(req) {
         try {
-            url = new URL(REDIS_URL);
-        } catch {
-            throw new Error("Invalid URL format");
-        }
+            const body = await req.json();
+            const { REDIS_URL } = body;
 
-        const isTls = url.protocol === "rediss:";
-        const options: any = {
-            hostname: url.hostname,
-            port: url.port ? parseInt(url.port) : 6379,
-        };
+            if (!REDIS_URL) {
+                return new Response(JSON.stringify({
+                    success: false,
+                    message: "Missing REDIS_URL"
+                }), { headers: { "Content-Type": "application/json" } });
+            }
 
-        if (url.password) options.password = url.password;
-        if (url.username) options.username = url.username; // ACL support
-        if (isTls) options.tls = true;
+            // Configure Redis client for a "One-off" test
+            const redis = new Redis(REDIS_URL, {
+                maxRetriesPerRequest: 0,
+                connectTimeout: 5000,
+                lazyConnect: true,
+                retryStrategy: () => null
+            });
 
-        // 2. Connect with a timeout logic (Native driver doesn't have connectTimeout option)
-        // We race the connection against a 5s timer
-        const redisPromise = connect(options);
-        const timeoutPromise = new Promise((_, reject) =>
-            setTimeout(() => reject(new Error("Connection timed out")), 5000)
-        );
+            redis.on("error", () => { }); // Suppress console noise
 
-        const redis = await Promise.race([redisPromise, timeoutPromise]) as any;
+            try {
+                await redis.connect();
+                const response = await redis.ping();
 
-        try {
-            // 3. Ping
-            const response = await redis.ping();
+                if (response !== "PONG") {
+                    throw new Error("Received unexpected response from Redis");
+                }
 
-            if (response !== "PONG") throw new Error("Unexpected response");
+                await redis.quit();
 
-            await redis.close();
+                return new Response(JSON.stringify({
+                    success: true,
+                    message: "Successfully connected and PINGed Redis."
+                }), { headers: { "Content-Type": "application/json" } });
 
+            } catch (connError: any) {
+                redis.disconnect();
+                return new Response(JSON.stringify({
+                    success: false,
+                    message: `Connection Failed: ${connError.message}`
+                }), { headers: { "Content-Type": "application/json" } });
+            }
+
+        } catch (error: any) {
             return new Response(JSON.stringify({
-                success: true,
-                message: "Successfully connected and PINGed Redis."
-            }), { headers: { "Content-Type": "application/json" } });
-
-        } catch (err: any) {
-            redis.close();
-            throw err;
+                success: false,
+                message: "Server Error: " + error.message
+            }), {
+                status: 500,
+                headers: { "Content-Type": "application/json" }
+            });
         }
-
-    } catch (error: any) {
-        return new Response(JSON.stringify({
-            success: false,
-            message: "Connection Failed: " + error.message
-        }), { status: 200, headers: { "Content-Type": "application/json" } });
     }
 };
