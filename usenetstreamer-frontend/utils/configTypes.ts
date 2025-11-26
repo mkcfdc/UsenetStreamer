@@ -14,6 +14,7 @@ export interface Config {
     NZBHYDRA_API_KEY?: string;
     USE_STRM_FILES: boolean;
     INDEXING_METHOD: string;
+    REDIS_URL: string;
 }
 
 export type IndexingMethod = 'prowlarr' | 'nzbhydra2' | 'direct';

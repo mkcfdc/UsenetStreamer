@@ -20,6 +20,7 @@
   ],
   "imports": {
     "@/": "./",
+    "@db/redis": "jsr:@db/redis@^0.40.0",
     "fresh": "jsr:@fresh/core@^2.2.0",
     "preact": "npm:preact@^10.27.2",
     "@preact/signals": "npm:@preact/signals@^2.5.0",

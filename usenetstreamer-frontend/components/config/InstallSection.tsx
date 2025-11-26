@@ -1,5 +1,5 @@
 import { useState } from "preact/hooks";
-import { Config } from "../utils/configTypes.ts";
+import { Config } from "../../utils/configTypes.ts";
 
 interface Props {
     config: Config;
@@ -17,8 +17,6 @@ export function InstallSection({ config }: Props) {
         const text = manifestUrl;
         let isSuccess = false;
 
-        // 1. Try Modern API (Secure Contexts like HTTPS/Localhost)
-        // We check specifically for the writeText function availability
         if (navigator?.clipboard?.writeText) {
             try {
                 await navigator.clipboard.writeText(text);
@@ -28,8 +26,6 @@ export function InstallSection({ config }: Props) {
             }
         }
 
-        // 2. Fallback (HTTP / Non-Secure Contexts)
-        // If the modern API failed or didn't exist, we use the textarea hack
         if (!isSuccess) {
             try {
                 const textArea = document.createElement("textarea");

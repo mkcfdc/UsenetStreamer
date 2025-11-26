@@ -4,7 +4,8 @@ import { IndexingSection } from "../components/config/IndexingSection.tsx";
 import { NzbDavSection } from "../components/config/NzbDavSection.tsx";
 import { StremioSection } from "../components/config/StremioSection.tsx";
 import { NzbCheckSection } from "../components/config/NzbCheckSection.tsx";
-import { InstallSection } from "../components/InstallSection.tsx";
+import { InstallSection } from "../components/config/InstallSection.tsx";
+import { RedisSection } from "../components/config/RedisSection.tsx";
 
 const FeatureFlagsSection = ({ config, onChange }: { config: Config, onChange: (e: Event) => void }) => (
     <fieldset class="mb-10 pb-8 border-b border-white/5">
@@ -99,6 +100,7 @@ export default function ConfigForm() {
                 </div>
             )}
 
+            <RedisSection config={config} onChange={handleChange} />
             <IndexingSection config={config} onChange={handleChange} onMethodChange={handleIndexingMethodChange} />
             <NzbDavSection config={config} onChange={handleChange} />
             <StremioSection config={config} onChange={handleChange} />

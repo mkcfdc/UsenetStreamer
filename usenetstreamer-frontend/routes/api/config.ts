@@ -18,10 +18,11 @@ const CONFIG_KEYS_METADATA = {
     ADDON_SHARED_SECRET: { defaultValue: "", description: "Shared Secret for Stremio addon API" },
     NZB_CHECK_URL: { defaultValue: "https://nzbcheck.filmwhisper.dev", description: "URL for NZBCheck API" },
     NZB_CHECK_API_KEY: { defaultValue: "", description: "API Key for NZBCheck" },
-    NZBHYDRA_URL: { defaultValue: "", description: "URL for NZBHydra2 (optional)" },
-    NZBHYDRA_API_KEY: { defaultValue: "", description: "API Key for NZBHydra2 (optional)" },
+    NZBHYDRA_URL: { defaultValue: "", description: "URL for NZBHydra2" },
+    NZBHYDRA_API_KEY: { defaultValue: "", description: "API Key for NZBHydra2" },
     USE_STRM_FILES: { defaultValue: "false", description: "Enable experimental .strm file support (true/false)" },
     INDEXING_METHOD: { defaultValue: "prowlarr", description: "Selected indexing method (prowlarr, nzbhydra2, direct)" },
+    REDIS_URL: { defaultValue: "redis://redis:6379", description: "Redis connection string" }
 };
 
 export const handler: Handlers = define.handlers({
@@ -43,6 +44,7 @@ export const handler: Handlers = define.handlers({
                 NZBHYDRA_API_KEY: getOrSetSetting("NZBHYDRA_API_KEY", CONFIG_KEYS_METADATA.NZBHYDRA_API_KEY.defaultValue, CONFIG_KEYS_METADATA.NZBHYDRA_API_KEY.description),
                 USE_STRM_FILES: getOrSetSetting("USE_STRM_FILES", CONFIG_KEYS_METADATA.USE_STRM_FILES.defaultValue, CONFIG_KEYS_METADATA.USE_STRM_FILES.description) === "true",
                 INDEXING_METHOD: getOrSetSetting("INDEXING_METHOD", CONFIG_KEYS_METADATA.INDEXING_METHOD.defaultValue, CONFIG_KEYS_METADATA.INDEXING_METHOD.description),
+                REDIS_URL: getOrSetSetting("REDIS_URL", CONFIG_KEYS_METADATA.REDIS_URL.defaultValue, CONFIG_KEYS_METADATA.REDIS_URL.description),
             };
 
             return new Response(JSON.stringify(currentConfig), {
