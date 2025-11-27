@@ -8,7 +8,7 @@ services:
       redis:
         condition: service_healthy
     volumes:
-      - ./data:/app/data
+      - usenet-data:/app/data
     ports:
       - "7000:7000"
     env_file:
@@ -23,7 +23,7 @@ services:
       usenetstreamer:
         condition: service_started
     volumes:
-      - ./data:/app/data
+      - usenet-data:/app/data
     ports:
       - "8000:8000"
     networks:
@@ -104,3 +104,5 @@ services:
 networks:
   media:
     driver: bridge
+volumes:
+  usenet-data:
