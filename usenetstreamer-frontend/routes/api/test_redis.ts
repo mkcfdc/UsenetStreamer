@@ -8,10 +8,10 @@ const jsonStringify = (data: any) => {
 };
 
 export const handler: Handlers = {
-    async POST(req) {
+    async POST(ctx) {
         let client;
         try {
-            const body = await req.json();
+            const body = await ctx.req.json();
             const { REDIS_URL } = body;
 
             if (!REDIS_URL) throw new Error("Missing REDIS_URL");
@@ -33,6 +33,7 @@ export const handler: Handlers = {
                 username: url.username || undefined,
                 tls: useTls,
             };
+            console.log(options)
 
             const timeoutPromise = new Promise((_, reject) =>
                 setTimeout(() => reject(new Error("Connection timed out (5s)")), 5000)
