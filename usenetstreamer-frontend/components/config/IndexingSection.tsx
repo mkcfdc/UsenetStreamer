@@ -8,20 +8,45 @@ interface Props {
     onMethodChange: (method: IndexingMethod) => void;
 }
 
+interface IndexerPreset {
+    name: string;
+    url: string;
+}
+
 export function IndexingSection({ config, onChange, onMethodChange }: Props) {
     const [showProwlarrKey, setShowProwlarrKey] = useState(false);
     const [showNzbHydraKey, setShowNzbHydraKey] = useState(false);
 
     const [indexers, setIndexers] = useState<Indexer[]>([]);
+    const [presets, setPresets] = useState<IndexerPreset[]>([]);
+    const [selectedPreset, setSelectedPreset] = useState("custom");
+
     const [newIndexer, setNewIndexer] = useState({ name: '', url: '', api_key: '' });
     const [addingIndexer, setAddingIndexer] = useState(false);
     const [localMessage, setLocalMessage] = useState<{ text: string; type: "success" | "error" } | null>(null);
 
+    // Fetch user saved indexers
     useEffect(() => {
         if (config.INDEXING_METHOD === 'direct') {
             fetchIndexers();
         }
     }, [config.INDEXING_METHOD]);
+
+    // Fetch Presets from GitHub
+    useEffect(() => {
+        const loadPresets = async () => {
+            try {
+                const res = await fetch("https://raw.githubusercontent.com/mkcfdc/UsenetStreamer/refs/heads/master/indexer_presets.json");
+                if (res.ok) {
+                    const data = await res.json();
+                    setPresets(data);
+                }
+            } catch (e) {
+                console.error("Failed to load indexer presets", e);
+            }
+        };
+        loadPresets();
+    }, []);
 
     const fetchIndexers = async () => {
         try {
@@ -30,6 +55,20 @@ export function IndexingSection({ config, onChange, onMethodChange }: Props) {
             const data = await response.json();
             setIndexers(data);
         } catch (e) { console.error(e); }
+    };
+
+    const handlePresetChange = (e: Event) => {
+        const value = (e.target as HTMLSelectElement).value;
+        setSelectedPreset(value);
+
+        if (value === "custom") {
+            setNewIndexer(prev => ({ ...prev, name: '', url: '' }));
+        } else {
+            const preset = presets.find(p => p.name === value);
+            if (preset) {
+                setNewIndexer(prev => ({ ...prev, name: preset.name, url: preset.url }));
+            }
+        }
     };
 
     const handleNewIndexerChange = (e: Event) => {
@@ -75,13 +114,13 @@ export function IndexingSection({ config, onChange, onMethodChange }: Props) {
             // Success!
             setLocalMessage({ text: "✓ Verified & Added Successfully!", type: "success" });
             setNewIndexer({ name: '', url: '', api_key: '' }); // Clear form
+            setSelectedPreset("custom"); // Reset dropdown
             fetchIndexers(); // Refresh list
 
         } catch (error: any) {
             setLocalMessage({ text: error.message, type: "error" });
         } finally {
             setAddingIndexer(false);
-            // Clear success message after a few seconds
             setTimeout(() => {
                 setLocalMessage((current) => current?.type === 'success' ? null : current);
             }, 3000);
@@ -108,7 +147,7 @@ export function IndexingSection({ config, onChange, onMethodChange }: Props) {
             <legend class="text-2xl font-bold text-sky-400 mb-8">Indexing Method</legend>
             <div class="space-y-6">
 
-                {/* ... Prowlarr Section (Unchanged) ... */}
+                {/* ... Prowlarr Section ... */}
                 <div class="group rounded-xl border border-white/10 bg-slate-800 transition-colors duration-200 focus-within:border-sky-500/40 hover:border-white/20">
                     <label class="block cursor-pointer p-5" htmlFor="indexing-prowlarr">
                         <div class="flex items-center justify-between">
@@ -142,7 +181,7 @@ export function IndexingSection({ config, onChange, onMethodChange }: Props) {
                     )}
                 </div>
 
-                {/* ... NZBHydra2 Section (Unchanged) ... */}
+                {/* ... NZBHydra2 Section ... */}
                 <div class="group rounded-xl border border-white/10 bg-slate-800 transition-colors duration-200 focus-within:border-cyan-500/40 hover:border-white/20">
                     <label class="block cursor-pointer p-5" htmlFor="indexing-nzbhydra2">
                         <div class="flex items-center justify-between">
@@ -197,6 +236,23 @@ export function IndexingSection({ config, onChange, onMethodChange }: Props) {
 
                             {/* Add New Form */}
                             <form onSubmit={handleAddIndexer} class="grid grid-cols-1 md:grid-cols-3 gap-4 items-end mb-8">
+
+                                {/* Preset Selector */}
+                                <div class="md:col-span-3">
+                                    <label class="block text-sm font-medium text-slate-300 mb-2">Select Preset or Enter Custom</label>
+                                    <select
+                                        value={selectedPreset}
+                                        onChange={handlePresetChange}
+                                        class="w-full p-3 rounded-lg bg-slate-900 border border-white/10 text-white focus:ring-2 focus:ring-teal-500 outline-none appearance-none"
+                                    >
+                                        <option value="custom">Custom Indexer...</option>
+                                        <option disabled>──────────</option>
+                                        {presets.map(p => (
+                                            <option key={p.name} value={p.name}>{p.name}</option>
+                                        ))}
+                                    </select>
+                                </div>
+
                                 <input type="text" name="name" value={newIndexer.name} onChange={handleNewIndexerChange} placeholder="Name" required class="w-full p-3 rounded-lg bg-slate-900 border border-white/10 text-white focus:ring-2 focus:ring-teal-500 outline-none" />
                                 <input type="url" name="url" value={newIndexer.url} onChange={handleNewIndexerChange} placeholder="URL" required class="w-full p-3 rounded-lg bg-slate-900 border border-white/10 text-white focus:ring-2 focus:ring-teal-500 outline-none" />
                                 <input type="text" name="api_key" value={newIndexer.api_key} onChange={handleNewIndexerChange} placeholder="API Key" required class="w-full p-3 rounded-lg bg-slate-900 border border-white/10 text-white focus:ring-2 focus:ring-teal-500 outline-none" />
