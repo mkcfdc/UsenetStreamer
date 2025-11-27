@@ -101,6 +101,7 @@ export function StremioSection({ config, onChange }: Props) {
             {/* Test Result Display */}
             {testResult && (
                 <div class={`mb-6 p-3 rounded-lg border ${testResult.success ? 'bg-green-500/10 border-green-500/30 text-green-300' : 'bg-red-500/10 border-red-500/30 text-red-300'}`}>
+                    {/* Title Header */}
                     <div class="flex items-center gap-2 font-bold text-sm mb-1">
                         {testResult.success ? (
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
@@ -109,7 +110,19 @@ export function StremioSection({ config, onChange }: Props) {
                         )}
                         {testResult.success ? "Verification Successful" : "Verification Failed"}
                     </div>
-                    <div class="text-xs opacity-90">{testResult.message}</div>
+
+                    {/* Server Message */}
+                    <div class="text-xs opacity-90 mb-2">{testResult.message}</div>
+
+                    {!testResult.success && (
+                        <div class="mt-2 text-xs bg-black/20 p-2 rounded border border-white/5">
+                            <span class="font-bold opacity-80 block mb-0.5">Tip:</span>
+                            If this is your first time enabling Redis, you may need to run:
+                            <code class="block mt-1 bg-black/40 px-2 py-1 rounded font-mono text-teal-500/90 select-all">
+                                docker compose restart usenetstreamer
+                            </code>
+                        </div>
+                    )}
                 </div>
             )}
 
