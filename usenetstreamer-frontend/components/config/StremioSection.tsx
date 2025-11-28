@@ -117,10 +117,11 @@ export function StremioSection({ config, onChange }: Props) {
                     {!testResult.success && (
                         <div class="mt-2 text-xs bg-black/20 p-2 rounded border border-white/5">
                             <span class="font-bold opacity-80 block mb-0.5">Tip:</span>
-                            If this is your first time enabling Redis, you may need to run:
+                            If this is your first time running the config, you may need to run on your docker host:
                             <code class="block mt-1 bg-black/40 px-2 py-1 rounded font-mono text-teal-500/90 select-all">
                                 docker compose restart usenetstreamer
                             </code>
+                            Don't forget to save changes first.
                         </div>
                     )}
                 </div>
