@@ -22,7 +22,8 @@ const CONFIG_KEYS_METADATA = {
     NZBHYDRA_API_KEY: { defaultValue: "", description: "API Key for NZBHydra2" },
     USE_STRM_FILES: { defaultValue: "false", description: "Enable experimental .strm file support (true/false)" },
     INDEXING_METHOD: { defaultValue: "prowlarr", description: "Selected indexing method (prowlarr, nzbhydra2, direct)" },
-    REDIS_URL: { defaultValue: "redis://redis:6379", description: "Redis connection string" }
+    REDIS_URL: { defaultValue: "redis://redis:6379", description: "Redis connection string" },
+    USE_STREMIO_NNTP: { defaultValue: "false", description: "Use built in Stremio NNTP (no nzbdav needed)" }
 };
 
 export const handler: Handlers = define.handlers({
@@ -43,6 +44,7 @@ export const handler: Handlers = define.handlers({
                 NZBHYDRA_URL: getOrSetSetting("NZBHYDRA_URL", CONFIG_KEYS_METADATA.NZBHYDRA_URL.defaultValue, CONFIG_KEYS_METADATA.NZBHYDRA_URL.description),
                 NZBHYDRA_API_KEY: getOrSetSetting("NZBHYDRA_API_KEY", CONFIG_KEYS_METADATA.NZBHYDRA_API_KEY.defaultValue, CONFIG_KEYS_METADATA.NZBHYDRA_API_KEY.description),
                 USE_STRM_FILES: getOrSetSetting("USE_STRM_FILES", CONFIG_KEYS_METADATA.USE_STRM_FILES.defaultValue, CONFIG_KEYS_METADATA.USE_STRM_FILES.description) === "true",
+                USE_STREMIO_NNTP: getOrSetSetting("USE_STREMIO_NNTP", CONFIG_KEYS_METADATA.USE_STREMIO_NNTP.defaultValue, CONFIG_KEYS_METADATA.USE_STREMIO_NNTP.description) === "true",
                 INDEXING_METHOD: getOrSetSetting("INDEXING_METHOD", CONFIG_KEYS_METADATA.INDEXING_METHOD.defaultValue, CONFIG_KEYS_METADATA.INDEXING_METHOD.description),
                 REDIS_URL: getOrSetSetting("REDIS_URL", CONFIG_KEYS_METADATA.REDIS_URL.defaultValue, CONFIG_KEYS_METADATA.REDIS_URL.description),
             };
