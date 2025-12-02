@@ -1,22 +1,5 @@
 # UsenetStreamer
 
-### Stremio Supports NZB directly
-As of today, 11/27/2025, Stremio v5 supports NZB directly via nzbUrl. This removes the need to run nzbDav.
-AIOStreams already has a great integration with this feature so I will not be developing further.
-
-Cons to using Stremio's built in NNTP support:
-1. Stremio makes the NNTP connection
-2. Indexer credentials are stored in plain text in the response body
-3. Usenet provider credentials are stored in plain text in the response body
-4. Not currently supported on the TV apps.
-5. You would need to run the Stremio host behind a VPN to block NNTP traffic (not needed but I've been running nzbdav behind my vpn and its been working great)
-
-
-Development of this addon at this point will slow greatly as it will become not needed and AIOStreams will be able to do everything.
-
-It was fun while it lasted!
-
-
 <p align="center">
   <img src="public/assets/icon.png" alt="UsenetStreamer logo" width="180" />
 </p>
@@ -72,6 +55,8 @@ educational purposes.
     flavour. File structure is a little strange. The frontend container only
     needs to be ran when you are configuring the addon, after you're done you
     can remove it.
+19. Added support for built in Stremio NNTP support. It works pretty awesome. One thing I hate, is that the connection string is in the response body, but I guess if it's your connection sting, it doesn't matter.
+    If you are sharing the addon, that could leak your nntp details to who ever you share with. NZBDav at least hides this data.
 
 ### How to use nzbcheck.filmwhisper.dev:
 
