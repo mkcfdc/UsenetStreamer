@@ -214,7 +214,7 @@ async function handler(req: Request): Promise<Response> {
                     streams.push({
                         name: `${getResolutionIcon(r.resolution)} ${prefix} ${r.resolution}`,
                         title: r.lines,
-                        nzbUrl: `${Config.ADDON_BASE_URL}/${Config.ADDON_SHARED_SECRET}/nzb/proxy/${hash}.nzb`,
+                        nzbUrl: `${Config.ADDON_BASE_URL}/nzb/proxy/${hash}.nzb`,
                         servers: [
                             String(Deno.env.get("NNTP_ADDRESS")), // need to get this from the database
                         ],
