@@ -18,6 +18,14 @@ const FeatureFlagsSection = ({ config, onChange }: { config: Config, onChange: (
                 <label htmlFor="USE_STRM_FILES" class="toggle-label block overflow-hidden h-6 rounded-full bg-slate-700 cursor-pointer"></label>
             </div>
         </div>
+        <div class="flex items-center justify-between p-4 bg-slate-800 rounded-lg border border-white/10">
+            <label htmlFor="USE_STREMIO_NNTP" class="text-sm font-medium text-slate-300">Enable Stremio NNTP support (Experimental)</label>
+            <div class="relative inline-block w-12 mr-2 align-middle select-none transition duration-200 ease-in">
+                <input type="checkbox" name="USE_STREMIO_NNTP" id="USE_STREMIO_NNTP" checked={config.USE_STREMIO_NNTP} onChange={onChange}
+                    class="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer" />
+                <label htmlFor="USE_STREMIO_NNTP" class="toggle-label block overflow-hidden h-6 rounded-full bg-slate-700 cursor-pointer"></label>
+            </div>
+        </div>
         <style dangerouslySetInnerHTML={{ __html: `.toggle-checkbox:checked { right: 0; border-color: #06b6d4; } .toggle-checkbox:checked + .toggle-label { background-color: #06b6d4; } .toggle-label { box-shadow: inset 0 0 0 9999px #1e293b; }` }} />
     </fieldset>
 );

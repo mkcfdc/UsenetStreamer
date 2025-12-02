@@ -1,6 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
-// deno-lint-ignore no-import-prefix
-import { join } from "jsr:@std/path@1.1.3";
+import { join } from "@std/path";
 
 let dbInstance: DatabaseSync | null = null;
 

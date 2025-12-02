@@ -85,6 +85,10 @@ export const Config = {
         return getOrSetSetting("USE_STRM_FILES", "false", "Use .strm files instead of direct links") === "true";
     },
 
+    get USE_STREMIO_NNTP() {
+        return getOrSetSetting("USE_STREMIO_NNTP", "false", "Use built in Stremio NNTP. No need for NZBNAV then.") === "true";
+    },
+
     get NZB_CHECK_URL() {
         return getOrSetSetting("NZB_CHECK_URL", "https://checknzb.filmwhisper.dev", "URL to the NZB Checking service");
     },

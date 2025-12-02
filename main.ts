@@ -19,7 +19,9 @@ import { checkNzb } from "./lib/nzbcheck.ts";
 interface Stream {
     name: string;
     title: string;
-    url: string;
+    url?: string;
+    nzbUrl?: string;
+    servers?: string[];
     size: number;
 }
 
@@ -208,12 +210,24 @@ async function handler(req: Request): Promise<Response> {
                 const hasViewPath = Array.isArray(cacheResult) && cacheResult.length > 0 && cacheResult[0];
                 const prefix = hasViewPath ? "⚡" : "";
 
-                streams.push({
-                    name: `${getResolutionIcon(r.resolution)} ${prefix} ${r.resolution}`,
-                    title: r.lines,
-                    url: `${Config.ADDON_BASE_URL}/${Config.ADDON_SHARED_SECRET}/nzb/stream/${hash}`,
-                    size: r.size,
-                });
+                if (Config.USE_STREMIO_NNTP && Deno.env.get("NNTP_ADDRESS")) { // @TODO: database this
+                    streams.push({
+                        name: `${getResolutionIcon(r.resolution)} ${prefix} ${r.resolution}`,
+                        title: r.lines,
+                        nzbUrl: `${Config.ADDON_BASE_URL}/${Config.ADDON_SHARED_SECRET}/nzb/proxy/${hash}.nzb`,
+                        servers: [
+                            String(Deno.env.get("NNTP_ADDRESS")), // need to get this from the database
+                        ],
+                        size: r.size,
+                    });
+                } else {
+                    streams.push({
+                        name: `${getResolutionIcon(r.resolution)} ${prefix} ${r.resolution}`,
+                        title: r.lines,
+                        url: `${Config.ADDON_BASE_URL}/${Config.ADDON_SHARED_SECRET}/nzb/stream/${hash}`,
+                        size: r.size,
+                    });
+                }
 
                 if (!hasViewPath) {
                     setPipeline.call(
@@ -265,6 +279,7 @@ async function handler(req: Request): Promise<Response> {
         }
     }
 
+    // nzb download proxy
     const proxyMatch = PATTERNS.nzbProxy.exec(url);
     if (proxyMatch && method === "GET") {
         const { hash } = proxyMatch.pathname.groups;

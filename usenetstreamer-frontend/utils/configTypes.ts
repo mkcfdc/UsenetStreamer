@@ -13,6 +13,7 @@ export interface Config {
     NZBHYDRA_URL?: string;
     NZBHYDRA_API_KEY?: string;
     USE_STRM_FILES: boolean;
+    USE_STREMIO_NNTP: boolean;
     INDEXING_METHOD: string;
     REDIS_URL: string;
 }
