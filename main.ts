@@ -15,6 +15,7 @@ import { jsonResponse } from "./utils/responseUtils.ts";
 import { filenameParse as parseRelease } from "@ctrl/video-filename-parser";
 import { formatVideoCard } from "./utils/streamFilters.ts";
 import { checkNzb } from "./lib/nzbcheck.ts";
+import { getActiveNntpServerUrls } from "./utils/sqlite.ts";
 
 interface Stream {
     name: string;
@@ -24,6 +25,8 @@ interface Stream {
     servers?: string[];
     size: number;
 }
+
+const nntpServers = getActiveNntpServerUrls();
 
 const PATTERNS = {
     manifest: new URLPattern({ pathname: "/:apiKey/manifest.json" }),
@@ -210,14 +213,13 @@ async function handler(req: Request): Promise<Response> {
                 const hasViewPath = Array.isArray(cacheResult) && cacheResult.length > 0 && cacheResult[0];
                 const prefix = hasViewPath ? "⚡" : "";
 
-                if (Config.USE_STREMIO_NNTP && Deno.env.get("NNTP_ADDRESS")) { // @TODO: database this
+                if (Config.USE_STREMIO_NNTP) { // @TODO: database this
+
                     streams.push({
                         name: `${getResolutionIcon(r.resolution)} ${prefix} ${r.resolution}`,
                         title: r.lines,
                         nzbUrl: `${Config.ADDON_BASE_URL}/nzb/proxy/${hash}.nzb`,
-                        servers: [
-                            String(Deno.env.get("NNTP_ADDRESS")), // need to get this from the database
-                        ],
+                        servers: nntpServers,
                         size: r.size,
                     });
                 } else {

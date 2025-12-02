@@ -6,6 +6,7 @@ import { StremioSection } from "../components/config/StremioSection.tsx";
 import { NzbCheckSection } from "../components/config/NzbCheckSection.tsx";
 import { InstallSection } from "../components/config/InstallSection.tsx";
 import { RedisSection } from "../components/config/RedisSection.tsx";
+import { StremioNNTPSection } from "../components/config/StremioNntpSection.tsx";
 
 const FeatureFlagsSection = ({ config, onChange }: { config: Config, onChange: (e: Event) => void }) => (
     <fieldset class="mb-10 pb-8 border-b border-white/5">
@@ -110,7 +111,11 @@ export default function ConfigForm() {
 
             <RedisSection config={config} onChange={handleChange} />
             <IndexingSection config={config} onChange={handleChange} onMethodChange={handleIndexingMethodChange} />
-            <NzbDavSection config={config} onChange={handleChange} />
+            {!config.USE_STREMIO_NNTP ? (
+                <NzbDavSection config={config} onChange={handleChange} />
+            ) : (
+                <StremioNNTPSection config={config} />
+            )}
             <StremioSection config={config} onChange={handleChange} />
             <NzbCheckSection config={config} onChange={handleChange} />
             <FeatureFlagsSection config={config} onChange={handleChange} />

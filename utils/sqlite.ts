@@ -149,3 +149,49 @@ export const closeDb = () => {
         dbInstance = null;
     }
 };
+
+
+export interface NntpServer {
+    id: number;
+    name: string;
+    host: string;
+    port: number;
+    username?: string;
+    password?: string;
+    ssl: number; // 0 or 1
+    connection_count: number;
+    priority: number;
+    active: number; // 0 or 1 (Using 1 for active)
+}
+
+export const getAllNntpServers = (): NntpServer[] => {
+    const stmt = getDb().prepare("SELECT * FROM nntp_servers ORDER BY priority ASC, name ASC"); // Changed to ASC priority (usually 0 is highest in Usenet/SABnzbd logic, or DESC if you prefer)
+    return stmt.all() as unknown as NntpServer[];
+};
+
+export const addNntpServer = (server: Omit<NntpServer, 'id' | 'active' | 'created_at' | 'updated_at'>) => {
+    const stmt = getDb().prepare(`
+        INSERT INTO nntp_servers (name, host, port, username, password, ssl, connection_count, priority, active) 
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+    `);
+    stmt.run(
+        server.name,
+        server.host,
+        server.port,
+        server.username || null,
+        server.password || null,
+        server.ssl,
+        server.connection_count,
+        server.priority
+    );
+};
+
+export const removeNntpServer = (id: number) => {
+    const stmt = getDb().prepare("DELETE FROM nntp_servers WHERE id = ?");
+    stmt.run(id);
+};
+
+export const toggleNntpServer = (id: number, active: boolean) => {
+    const stmt = getDb().prepare("UPDATE nntp_servers SET active = ? WHERE id = ?");
+    stmt.run(active ? 1 : 0, id);
+};
