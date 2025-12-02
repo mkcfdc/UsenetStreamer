@@ -195,3 +195,53 @@ export const toggleNntpServer = (id: number, active: boolean) => {
     const stmt = getDb().prepare("UPDATE nntp_servers SET active = ? WHERE id = ?");
     stmt.run(active ? 1 : 0, id);
 };
+
+/**
+ * Fetches active NNTP server configurations from the database
+ * and converts them into connection strings.
+ * Format: protocol://user:pass@host:port/connections
+ */
+export function getActiveNntpServerUrls(): string[] {
+    const db = getDb();
+    const serverUrls: string[] = [];
+
+    try {
+        // Query active servers. 
+        // Ordering: Priority ASC (0 is highest/first), then by ID.
+        const stmt = db.prepare(`
+            SELECT host, port, username, password, ssl, connection_count
+            FROM nntp_servers
+            WHERE active = 1
+            ORDER BY priority ASC, id ASC
+        `);
+
+        const rows = stmt.all() as any[];
+
+        for (const row of rows) {
+            const { host, port, username, password, ssl, connection_count } = row;
+
+            // 1. Determine Protocol
+            const protocol = ssl === 1 ? 'nntps' : 'nntp';
+
+            // 2. Build Auth Part (Encode to handle special chars in passwords)
+            let authPart = '';
+            if (username && password) {
+                authPart = `${encodeURIComponent(username)}:${encodeURIComponent(password)}@`;
+            } else if (username) {
+                authPart = `${encodeURIComponent(username)}@`;
+            }
+
+            // 3. Connection Limit
+            // Many streaming libraries accept the connection count as the path segment
+            const connections = connection_count > 0 ? connection_count : 1;
+
+            // 4. Construct URL
+            serverUrls.push(`${protocol}://${authPart}${host}:${port}/${connections}`);
+        }
+    } catch (error) {
+        console.error("Failed to fetch NNTP server configurations:", error);
+        return [];
+    }
+
+    return serverUrls;
+}
