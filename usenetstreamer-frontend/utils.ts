@@ -1,9 +1,9 @@
 import { createDefine } from "fresh";
 
-// This specifies the type of "ctx.state" which is used to share
-// data among middlewares, layouts and routes.
+import type { User } from "./utils/db/users.ts"; // Import your User type
+
 export interface State {
-  shared: string;
+  user?: User;
 }
 
 export const define = createDefine<State>();

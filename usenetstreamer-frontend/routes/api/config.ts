@@ -1,6 +1,6 @@
 // routes/api/config.ts
-import { define } from "../../utils.ts";
-import { Context, Handlers } from "fresh/server";
+import { define, type State } from "../../utils.ts";
+import type { Context } from "fresh";
 
 import { getOrSetSetting, updateSetting } from "../../utils/sqlite.ts";
 import { Config } from "../../utils/configTypes.ts";
@@ -26,8 +26,8 @@ const CONFIG_KEYS_METADATA = {
     USE_STREMIO_NNTP: { defaultValue: "false", description: "Use built in Stremio NNTP (no nzbdav needed)" }
 };
 
-export const handler: Handlers = define.handlers({
-    GET(_ctx: Context<unknown, unknown>) {
+export const handler = define.handlers({
+    GET(_ctx: Context<State>) {
         try {
             const currentConfig: Config = {
                 PROWLARR_URL: getOrSetSetting("PROWLARR_URL", CONFIG_KEYS_METADATA.PROWLARR_URL.defaultValue, CONFIG_KEYS_METADATA.PROWLARR_URL.description),
@@ -63,7 +63,7 @@ export const handler: Handlers = define.handlers({
     },
 
     // Handler function receives Fresh's Context object
-    async PUT(ctx: Context<unknown, unknown>) {
+    async PUT(ctx: Context<State>) {
         try {
             // Access the request body via ctx.req
             const updatedConfig: Config = await ctx.req.json();

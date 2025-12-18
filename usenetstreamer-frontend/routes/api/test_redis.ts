@@ -1,4 +1,4 @@
-import { Handlers } from "$fresh/server.ts";
+
 import { connect } from "@db/redis";
 
 const jsonStringify = (data: any) => {
@@ -7,7 +7,7 @@ const jsonStringify = (data: any) => {
     );
 };
 
-export const handler: Handlers = {
+export const handler = {
     async POST(ctx) {
         let client;
         try {

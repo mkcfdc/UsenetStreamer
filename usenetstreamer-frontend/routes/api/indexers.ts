@@ -1,11 +1,12 @@
 // routes/api/indexers.ts
 import { define } from "../../utils.ts"; // Adjust path if necessary
-import { Context } from "fresh/server";
+import { Context } from "fresh";
+import type { State } from "../../utils.ts";
 import { getAllIndexers, addIndexer, removeIndexer, toggleIndexer } from "../../utils/sqlite.ts";
 
-export const handler = define.handlers<unknown, unknown>({
+export const handler = define.handlers({
     // GET /api/indexers - Fetch all indexers
-    GET(_ctx: Context<unknown, unknown>) {
+    GET(_ctx: Context<State>) {
         try {
             const indexers = getAllIndexers();
             return new Response(JSON.stringify(indexers), {
@@ -22,7 +23,7 @@ export const handler = define.handlers<unknown, unknown>({
     },
 
     // POST /api/indexers - Add a new indexer
-    async POST(ctx: Context<unknown, unknown>) {
+    async POST(ctx: Context<State>) {
         try {
             const { name, url, api_key } = await ctx.req.json();
             if (!name || !url || !api_key) {
@@ -48,7 +49,7 @@ export const handler = define.handlers<unknown, unknown>({
     },
 
     // DELETE /api/indexers/:id - Remove an indexer
-    DELETE(ctx: Context<unknown, unknown>) {
+    DELETE(ctx: Context<State>) {
         try {
             const idParam = ctx.params.id; // Access ID from route parameters
             const id = parseInt(idParam);
@@ -76,7 +77,7 @@ export const handler = define.handlers<unknown, unknown>({
     },
 
     // PATCH /api/indexers/:id/toggle - Toggle indexer enabled status
-    async PATCH(ctx: Context<unknown, unknown>) {
+    async PATCH(ctx: Context<State>) {
         try {
             const idParam = ctx.params.id;
             const id = parseInt(idParam);

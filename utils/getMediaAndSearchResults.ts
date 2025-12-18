@@ -7,8 +7,8 @@ import { Config } from "../env.ts";
 
 interface RequestedEpisode {
     imdbid?: string;
-    season?: number | undefined;
-    episode?: number | undefined;
+    season?: number;
+    episode?: number;
 }
 
 interface CinemetaData {
@@ -36,11 +36,7 @@ const CINEMETA_CACHE_TTL = 86400 * 7;
 const PROWLARR_SEARCH_CACHE_TTL = 86400; // 1 day
 
 /**
- * Fetches media metadata and search results, utilizing Redis for caching.
- * Priority:
- * 1. NZBHydra (if ENV vars set)
- * 2. Prowlarr (if ENV vars set)
- * 3. Direct/SQLite (Default fallback)
+ * Optimized fetcher with Parallel Cache Lookups and Single-Pass Mapping
  */
 export async function getMediaAndSearchResults(
     type: 'movie' | 'series',
@@ -48,105 +44,110 @@ export async function getMediaAndSearchResults(
 ): Promise<{ cinemetaData: CinemetaData; results: SearchResult[] }> {
 
     const { imdbid: imdbId, season, episode } = episodeInfo;
+    if (!imdbId) throw new Error("IMDB ID is required");
 
-    // --- 1. Check Metadata Cache ---
+    // 1. Generate Cache Keys immediately
     const cinemetaKey = `cinemeta:${type}:${imdbId}`;
-    let cinemetaData: CinemetaData | null = await getJsonValue<CinemetaData>(cinemetaKey);
-
-    if (!cinemetaData) {
-        console.log(`[Cache] Cinemeta miss for ${cinemetaKey}`);
-        const fetchedData = await getCinemetaData(type, imdbId);
-        cinemetaData = fetchedData as CinemetaData;
-
-        await setJsonValue(cinemetaKey, '$', cinemetaData, CINEMETA_CACHE_TTL);
-    }
-
-    const { name: showName, year, tvdbId, tmdbId } = cinemetaData!;
-
-    // --- 2. Check Search Cache ---
-    const searchKey = episode && season
+    const searchKey = (season && episode)
         ? `search:${imdbId}:${season}:${episode}`
         : `search:${imdbId}`;
 
-    let results: SearchResult[] | null = await getJsonValue<SearchResult[]>(searchKey);
+    // 2. Parallel Cache Lookup (IO Optimization)
+    // We don't need Cinemeta data to CHECK the search cache, only to PERFORM a search.
+    const [cachedMeta, cachedResults] = await Promise.all([
+        getJsonValue<CinemetaData>(cinemetaKey),
+        getJsonValue<SearchResult[]>(searchKey)
+    ]);
 
-    if (!results) {
-        console.log(`[Cache] Search miss for ${searchKey} (Provider lookup needed)`);
+    // 3. Resolve Metadata
+    // If we have it in cache, use it. If not, start the fetch.
+    let cinemetaPromise: Promise<CinemetaData> | CinemetaData;
 
-        const searchOptions = {
-            imdbId,
-            tvdbId,
-            tmdbId,
-            name: showName,
-            year: String(year),
-            type,
-            limit: 50,
-            season,
-            episode,
-        };
+    if (cachedMeta) {
+        cinemetaPromise = cachedMeta;
+    } else {
+        console.log(`[Cache] Cinemeta miss for ${cinemetaKey}`);
+        // We wrap this in a promise to await it only if needed later
+        cinemetaPromise = getCinemetaData(type, imdbId).then(async (data) => {
+            // Background cache set (don't await this if not critical)
+            setJsonValue(cinemetaKey, '$', data, CINEMETA_CACHE_TTL).catch(console.error);
+            return data as CinemetaData;
+        });
+    }
 
-        let rawResults: SearchResult[] = [];
+    // 4. Resolve Search Results
+    let results: SearchResult[] = [];
 
-        // OPTION 1: NZBHydra
-        if (Config.NZBHYDRA_URL && Config.NZBHYDRA_API_KEY) {
-            console.log(`[Search] Using Provider: NZBHydra2`);
-            const hydraResults = await searchHydra(searchOptions);
+    if (cachedResults) {
+        results = cachedResults;
+        // If we have search results, we just need to ensure metadata is resolved for the return value
+        // We await it here to keep the return type signature clean
+        const cinemetaData = await cinemetaPromise;
+        return { cinemetaData, results };
+    }
 
-            rawResults = hydraResults.map(h => ({
-                guid: h.guid,
-                title: h.title,
-                downloadUrl: h.downloadUrl,
-                size: h.size,
-                indexer: h.indexer,
-                age: h.age,
-                protocol: "usenet",
-                fileName: h.title
-            }));
+    // --- Search Cache Miss: Perform Live Search ---
 
-            // OPTION 2: Prowlarr
-        } else if (Config.PROWLARR_URL && Config.PROWLARR_API_KEY) {
-            console.log(`[Search] Using Provider: Prowlarr`);
-            const prowlarrResults = await searchProwlarr(searchOptions);
-            rawResults = prowlarrResults as SearchResult[];
+    console.log(`[Cache] Search miss for ${searchKey}`);
 
-            // OPTION 3: Direct API (SQLite)
-        } else {
-            console.log(`[Search] Using Provider: Direct/SQLite`);
-            const directResults = await searchDirect(searchOptions);
+    // We MUST have metadata now to search (for TVDB/Year)
+    const cinemetaData = await cinemetaPromise;
 
-            rawResults = directResults.map(r => ({
-                guid: r.guid,
-                title: r.title,
-                downloadUrl: r.downloadUrl,
-                size: r.size,
-                indexer: r.indexer,
-                age: r.age,
-                protocol: "usenet",
-                fileName: r.title
-            }));
+    const searchOptions = {
+        imdbId,
+        tvdbId: cinemetaData.tvdbId,
+        tmdbId: cinemetaData.tmdbId,
+        name: cinemetaData.name,
+        year: String(cinemetaData.year),
+        type,
+        limit: 50,
+        season,
+        episode,
+    };
 
-            if (rawResults.length === 0) {
-                console.warn(`[Search] No results found via Direct search. (Check 'deno task nzb list' to ensure indexers are added)`);
-            }
-        }
+    // Provider Logic: Single Pass Mapping
+    if (Config.NZBHYDRA_URL && Config.NZBHYDRA_API_KEY) {
+        console.log(`[Search] Using Provider: NZBHydra2`);
+        const hydraResults = await searchHydra(searchOptions);
+        results = hydraResults.map(h => ({
+            guid: h.guid,
+            title: h.title,
+            downloadUrl: h.downloadUrl,
+            size: h.size,
+            indexer: h.indexer,
+            age: h.age,
+            protocol: "usenet",
+            fileName: h.title // Normalize
+        }));
 
-        results = rawResults.map(r => ({
+    } else if (Config.PROWLARR_URL && Config.PROWLARR_API_KEY) {
+        console.log(`[Search] Using Provider: Prowlarr`);
+        const prowlarrResults = await searchProwlarr(searchOptions);
+        // Prowlarr lib likely returns the correct shape, but we cast to ensure
+        results = prowlarrResults as SearchResult[];
+
+    } else {
+        console.log(`[Search] Using Provider: Direct/SQLite`);
+        const directResults = await searchDirect(searchOptions);
+        results = directResults.map(r => ({
             guid: r.guid,
             title: r.title,
             downloadUrl: r.downloadUrl,
             size: r.size,
             indexer: r.indexer,
             age: r.age,
-            protocol: r.protocol || 'usenet'
+            protocol: "usenet",
+            fileName: r.title
         }));
 
-        await setJsonValue(
-            searchKey,
-            '$',
-            results,
-            PROWLARR_SEARCH_CACHE_TTL
-        );
+        if (results.length === 0) {
+            console.warn(`[Search] No results found via Direct search.`);
+        }
     }
 
-    return { cinemetaData: cinemetaData!, results: results! };
+    // Cache the results
+    // We don't await this to return the response faster to the UI/API
+    setJsonValue(searchKey, '$', results, PROWLARR_SEARCH_CACHE_TTL).catch(console.error);
+
+    return { cinemetaData, results };
 }

@@ -9,16 +9,14 @@ import { md5 } from "../../utils/md5Encoder.ts";
 
 import { findBestVideoFile } from "../../utils/findBestVideoFile.ts";
 import { streamFailureVideo } from "../streamFailureVideo.ts";
-import { parseRequestedEpisode } from "../../utils/parseRequestedEpisode.ts";
+import { parseRequestedEpisode, type EpisodeInfo } from "../../utils/parseRequestedEpisode.ts";
 import { proxyNzbdavStream } from "./proxyNzbdav.ts";
 import { buildNzbdavApiParams, getNzbdavCategory, sleep } from "./nzbUtils.ts";
 import { updateNzbStatus } from "../nzbcheck.ts";
-
-import type { EpisodeInfo } from "../../utils/parseRequestedEpisode.ts";
 import { fetcher } from "../../utils/fetcher.ts";
-
 import { Config } from "../../env.ts";
 
+// --- Types ---
 
 interface StreamCache {
     downloadUrl: string;
@@ -71,6 +69,8 @@ class NzbdavError extends Error {
     }
 }
 
+// --- Caches ---
+
 const nzbdavStreamCache = new LRU<string, { status: "ready" | "pending" | "failed"; data?: StreamResult; promise?: Promise<StreamResult>; error?: any }>({
     max: Config.NZBDAV_CACHE_MAX_ITEMS,
     ttl: Config.NZBDAV_CACHE_TTL_MS,
@@ -81,100 +81,71 @@ const streamMetadataCache = new LRU<string, { data: StreamCache }>({
     ttl: Config.STREAM_METADATA_CACHE_TTL_MS,
 });
 
+// --- Helpers ---
+
 /**
- * Recursively normalizes object keys to camelCase and maps specific inconsistencies 
- * (e.g. nzo_id -> nzoId) to a standard format.
+ * Minified Lua script to save bandwidth.
  */
-function normalizeKeys(obj: any): any {
-    if (Array.isArray(obj)) return obj.map(normalizeKeys);
-    if (obj !== null && typeof obj === "object") {
-        return Object.keys(obj).reduce((acc, key) => {
-            // Normalize key string
-            const lowerKey = key.toLowerCase().replace(/[^a-z0-9]/g, "");
-            let newKey = key;
+const REMOVE_PROWLARR_SCRIPT = `local k=KEYS[1];if redis.call("EXISTS",k)==0 then return 0 end;local a=redis.call('JSON.GET',k,'$');if not a then return 0 end;local d=cjson.decode(a);local t=d[1];if not t then return 0 end;local x=-1;for i,v in ipairs(t) do if v.downloadUrl==ARGV[1] then x=i-1;break end end;if x>=0 then redis.call('JSON.ARRPOP',k,'$',x);local l=redis.call('JSON.ARRLEN',k,'$[0]') or 0;if l==0 then redis.call('DEL',k) end;return 1 end;return 0`;
 
-            if (["nzoid", "id", "nzo_id"].includes(lowerKey)) newKey = "nzoId";
-            else if (["failmessage", "fail_message"].includes(lowerKey)) newKey = "failMessage";
-            else if (["jobname", "name", "nzbname"].includes(lowerKey)) newKey = "jobName";
-            else if (["category", "cat"].includes(lowerKey)) newKey = "category";
-            else if (["status"].includes(lowerKey)) newKey = "status";
-            // Basic camelCase conversion for others if needed, or keep original
-
-            acc[newKey] = normalizeKeys(obj[key]);
-            return acc;
-        }, {} as any);
-    }
-    return obj;
+function normalizeSlot(slot: any): NzbHistorySlot {
+    return {
+        nzoId: slot.nzo_id || slot.id || slot.nzoId || "",
+        status: (slot.status || "").toLowerCase(),
+        failMessage: slot.fail_message || slot.failMessage || "",
+        category: slot.category || slot.cat || "",
+        jobName: slot.job_name || slot.jobName || slot.name || slot.nzb_name || slot.nzbName || "",
+        name: slot.name || ""
+    };
 }
-
 
 export async function fetchNzbdav<T = any>(
     mode: string,
     params: Record<string, string | number | boolean | undefined> = {},
     timeoutMs: number = 10000
 ): Promise<T> {
-    const cleanParams = Object.fromEntries(
-        Object.entries(params).filter(([_, v]) => v !== undefined)
-    );
-
-    const finalParams = buildNzbdavApiParams(mode, cleanParams as Record<string, any>);
-
-    const data = await fetcher<any>(`${Config.NZBDAV_URL}/api`, {
-        params: finalParams,
-        timeoutMs,
-        headers: {
-            "X-API-KEY": Config.NZBDAV_API_KEY || "",
-        },
-    });
-
-    const normalized = normalizeKeys(data);
-
-    if (normalized?.error) {
-        throw new Error(`[NZBDAV] API Error: ${normalized.error}`);
+    // 1. Build clean params
+    const cleanParams: Record<string, any> = {};
+    for (const k in params) {
+        if (params[k] !== undefined) cleanParams[k] = params[k];
     }
 
-    return normalized as T;
+    const finalParams = buildNzbdavApiParams(mode, cleanParams);
+
+    // 2. Fetch with Dynamic Headers (Fix for 400 Bad Request)
+    // We read Config.NZBDAV_API_KEY here to ensure it's loaded.
+    try {
+        const data = await fetcher<any>(`${Config.NZBDAV_URL}/api`, {
+            params: finalParams,
+            timeoutMs,
+            headers: {
+                "X-API-KEY": Config.NZBDAV_API_KEY || "",
+            },
+        });
+
+        if (data?.error) {
+            throw new Error(`[NZBDAV] API Error: ${data.error}`);
+        }
+        return data as T;
+    } catch (e: any) {
+        // Enhance error logging for debugging
+        if (e.message.includes("400")) {
+            console.error(`[NZBDAV] 400 Bad Request. Mode: ${mode}, Params:`, JSON.stringify(finalParams));
+        }
+        throw e;
+    }
 }
 
 async function removeFailedProwlarrEntry(redisKey: string, downloadUrl: string) {
-    // Lua script to find and remove an entry from a JSON array by downloadUrl
-    const script = `
-    local key = KEYS[1]
-    local url = ARGV[1]
-    
-    if redis.call("EXISTS", key) == 0 then return 0 end
-    
-    local arr = redis.call('JSON.GET', key, '$')
-    if not arr then return 0 end
-    
-    local decoded = cjson.decode(arr)
-    -- JSON.GET returns an array of results, we want the first result
-    local items = decoded[1] 
-    
-    if not items then return 0 end
-
-    local idx = -1
-    for i, item in ipairs(items) do
-      if item.downloadUrl == url then 
-        idx = i - 1 -- redis JSON is 0-indexed for path operations
-        break 
-      end
-    end
-
-    if idx >= 0 then
-      redis.call('JSON.ARRPOP', key, '$', idx)
-      local len = redis.call('JSON.ARRLEN', key, '$[0]') or 0
-      if len == 0 then redis.call('DEL', key) end
-      return 1
-    end
-    return 0
-  `;
-    await redis.eval(script, redisKey, [downloadUrl]);
+    try {
+        await redis.eval(REMOVE_PROWLARR_SCRIPT, redisKey, [downloadUrl]);
+    } catch (e) {
+        console.warn(`[Redis] Failed to clean prowlarr entry:`, e);
+    }
 }
 
 async function addNzbToNzbdav(nzbUrl: string, category: string, jobLabel: string): Promise<{ nzoId: string }> {
     if (!nzbUrl) throw new Error("Missing NZB download URL");
-    if (!category) throw new Error("Missing NZBDav category");
 
     const jobName = jobLabel || "untitled";
     console.log(`[NZBDAV] Queueing NZB for category=${category} (${jobName})`);
@@ -185,11 +156,8 @@ async function addNzbToNzbdav(nzbUrl: string, category: string, jobLabel: string
         nzbname: jobName,
     }, Config.NZBDAV_API_TIMEOUT_MS);
 
-    if (!json?.status) {
-        throw new Error(`[NZBDAV] Failed to queue NZB: Status missing`);
-    }
-
-    const nzoId = json.nzoId || (Array.isArray(json.nzo_ids) && json.nzo_ids[0]);
+    // Fast check for ID variations
+    const nzoId = json.nzo_ids?.[0] || json.nzoId || json.nzo_id;
 
     if (!nzoId) {
         console.debug(`[NZBDAV] Response dump:`, json);
@@ -207,29 +175,31 @@ export async function waitForNzbdavHistorySlot(
 ): Promise<NzbHistorySlot> {
     const deadline = Date.now() + Config.NZBDAV_POLL_TIMEOUT_MS;
     let currentInterval = Config.NZBDAV_POLL_INTERVAL_MS;
-    const MAX_INTERVAL = Config.NZBDAV_POLL_TIMEOUT_MS; // Cap polling at 10 seconds == more time is needed for the 4k files.
+    const MAX_INTERVAL = 10000;
 
     console.debug(`[NZBDAV] Polling history for ${nzoId}.`);
 
     while (Date.now() < deadline) {
-        signal?.throwIfAborted();
+        if (signal?.aborted) throw signal.reason;
 
         try {
             const json = await fetchNzbdav("history", {
                 start: "0",
-                limit: "100",
+                limit: "1",
                 category: category,
                 nzo_ids: nzoId,
             }, currentInterval);
 
-            const history = json.history || {};
-            const slots: NzbHistorySlot[] = history.slots || [];
+            const slots = json.history?.slots || json.slots || [];
 
-            // Find the specific job
-            const slot = slots.find((entry) => entry.nzoId === nzoId);
+            // Find our specific job
+            const rawSlot = slots.find((entry: any) =>
+                entry.nzo_id === nzoId || entry.id === nzoId || entry.nzoId === nzoId
+            );
 
-            if (slot) {
-                const status = String(slot.status || "").toLowerCase();
+            if (rawSlot) {
+                const slot = normalizeSlot(rawSlot);
+                const status = slot.status;
 
                 if (status === "completed" || status === "success") {
                     console.log(`[NZBDAV] NZB ${nzoId} completed in ${category}`);
@@ -241,23 +211,24 @@ export async function waitForNzbdavHistorySlot(
                     throw new NzbdavError(`[NZBDAV] NZB failed: ${failMessage}`, failMessage, nzoId, category);
                 }
 
-                console.log(`[NZBDAV:history] NZB ${nzoId} status: ${status}.`);
+                if (Math.random() > 0.8) {
+                    console.log(`[NZBDAV:history] NZB ${nzoId} status: ${status}.`);
+                }
             } else {
-                // Job not in history usually means it is still in the "queue" (downloading)
                 console.debug(`[NZBDAV:history] Job ${nzoId} not found in history yet.`);
             }
 
         } catch (err) {
             if (err instanceof NzbdavError) throw err;
             if ((err as Error).name === "AbortError") throw err;
-
-            // Log warning but continue polling
             console.warn(`[NZBDAV] Poll warning: ${err instanceof Error ? err.message : err}`);
         }
 
-        // Wait with abort signal support
         await sleep(currentInterval, signal);
-        currentInterval = Math.min(currentInterval * 1.5, MAX_INTERVAL);
+
+        if (currentInterval < MAX_INTERVAL) {
+            currentInterval = Math.floor(currentInterval * 1.5);
+        }
     }
 
     throw new Error(`[NZBDAV] Timeout waiting for NZB ${nzoId}`);
@@ -273,13 +244,14 @@ async function buildNzbdavStream(params: {
     signal?: AbortSignal;
 }): Promise<StreamResult> {
     const { downloadUrl, category, title, requestedEpisode, indexer, fileId, signal } = params;
-    const cacheKey = `streams:${md5(downloadUrl)}`;
+
+    // OPTIMIZATION: Calculate Hash Once
+    const urlHash = md5(downloadUrl);
+    const cacheKey = `streams:${urlHash}`;
 
     // 1. Determine correct Job Name logic
-    // If using AltMount, we force the use of the MD5 hash as the job name.
-    // This ensures the folder on disk matches what we search for, preventing "Human Title" vs "Hash" mismatches.
     const isAltMount = Config.NZBDAV_URL.includes("altmount");
-    const intendedJobName = isAltMount ? md5(downloadUrl) : title;
+    const intendedJobName = isAltMount ? urlHash : title;
 
     // 2. Check Persistence Cache (Redis)
     const cached = await getJsonValue<StreamResult | StreamResult[]>(cacheKey, "$");
@@ -305,38 +277,32 @@ async function buildNzbdavStream(params: {
             jobName: intendedJobName
         };
 
-        await setJsonValue(cacheKey, "$.viewPath", existingFile.viewPath);
+        setJsonValue(cacheKey, "$.viewPath", existingFile.viewPath).catch(console.error);
+
         return result;
     }
 
     // 4. Proxy Download (Add to NZBDav) 
-    const proxyUrl = `${Config.ADDON_BASE_URL}/nzb/proxy/${md5(downloadUrl)}.nzb`;
-    // Pass intendedJobName (hash if altmount) instead of title
+    const proxyUrl = `${Config.ADDON_BASE_URL}/nzb/proxy/${urlHash}.nzb`;
     const { nzoId } = await addNzbToNzbdav(proxyUrl, category, intendedJobName);
 
     // 5. Wait for completion
     const slot = await waitForNzbdavHistorySlot(nzoId, category, signal);
 
-    const slotCategory = slot.category || category;
-
-    // --- SANITIZATION FIX ---
-    // Sometimes downloaders return paths like "tmp/content/Movies/hash.nzb" as the name.
-    // We must clean this up before searching.
+    // --- SANITIZATION & SEARCH ---
     let searchName = slot.jobName || slot.name || intendedJobName;
 
-    // 1. Remove .nzb extension if present (downloader often reports filename as name)
-    if (searchName.endsWith(".nzb")) {
-        searchName = searchName.slice(0, -4);
-    }
+    // Fast Cleanup
+    if (searchName.endsWith(".nzb")) searchName = searchName.slice(0, -4);
 
-    // 2. If it contains slashes (path leak), take the last segment (basename)
-    if (searchName.includes("/") || searchName.includes("\\")) {
+    // Handle path separators in job names
+    if (searchName.indexOf("/") !== -1 || searchName.indexOf("\\") !== -1) {
         console.warn(`[NZBDAV] Job name contained path characters: "${searchName}". Sanitizing.`);
         searchName = searchName.split(/[/\\]/).pop() || searchName;
     }
 
     if (isAltMount && intendedJobName && searchName !== intendedJobName) {
-        console.log(`[NZBDAV] Enforcing AltMount hash for search: ${intendedJobName} (ignoring history name: ${searchName})`);
+        console.log(`[NZBDAV] Enforcing AltMount hash for search: ${intendedJobName}`);
         searchName = intendedJobName;
     }
 
@@ -344,19 +310,19 @@ async function buildNzbdavStream(params: {
 
     // 6. Find final file path
     const bestFile = await findBestVideoFile({
-        category: slotCategory,
+        category: slot.category || category,
         jobName: searchName,
         requestedEpisode,
     });
 
     if (!bestFile) {
-        console.error(`[NZBDAV] Search failed for: Category=${slotCategory}, Job=${searchName}`);
+        console.error(`[NZBDAV] Search failed for: Category=${slot.category}, Job=${searchName}`);
         throw new Error("[NZBDAV] Download complete but no video file found");
     }
 
     const result: StreamResult = {
         nzoId,
-        category: slotCategory,
+        category: slot.category || category,
         jobName: searchName,
         viewPath: bestFile.viewPath,
         size: Number(bestFile.size) || 0,
@@ -368,17 +334,16 @@ async function buildNzbdavStream(params: {
         rawImdbId: (validCache as any)?.rawImdbId,
     };
 
-    await setJsonValue(cacheKey, "$", result);
+    Promise.all([
+        setJsonValue(cacheKey, "$", result),
+        (indexer && fileId)
+            ? updateNzbStatus({ source_indexer: indexer, file_id: fileId }, true, "Ready to stream")
+            : Promise.resolve()
+    ]).catch(err => console.error("[NZBDAV] Background update error:", err));
+
     console.log(`[NZBDAV] Stream ready: ${result.viewPath}`);
-
-    if (indexer && fileId) {
-        console.log(`[NZBDAV] Updating NZB status: indexer=${indexer}, fileId=${fileId}`);
-        await updateNzbStatus({ source_indexer: indexer, file_id: fileId }, true, "All files present. Ready to stream.");
-    }
-
     return result;
 }
-
 
 async function getOrCreateNzbdavStream(
     cacheKey: string,
@@ -402,8 +367,6 @@ async function getOrCreateNzbdavStream(
     try {
         return await promise;
     } catch (error: any) {
-        // Only cache logic failures, not transient network errors if possible
-        // But strict duplicate prevention requires us to handle failures carefully
         if (error?.isNzbdavFailure) {
             nzbdavStreamCache.set(cacheKey, { status: "failed", error });
         } else {
@@ -424,10 +387,7 @@ export async function streamNzbdavProxy(keyHash: string, req: Request): Promise<
 
     if (!meta) {
         console.warn(`[StreamProxy] Missing metadata for key: ${keyHash}`);
-        const failureResponse = await streamFailureVideo(req);
-        if (failureResponse) return failureResponse;
-
-        return new Response(JSON.stringify({ error: "Stream metadata missing or expired" }), {
+        return (await streamFailureVideo(req)) || new Response(JSON.stringify({ error: "Stream metadata missing or expired" }), {
             status: 502,
             headers: { "Content-Type": "application/json" },
         });
@@ -435,13 +395,12 @@ export async function streamNzbdavProxy(keyHash: string, req: Request): Promise<
 
     const { downloadUrl, type = "movie", title = "NZB Stream", prowlarrId, guid, indexer } = meta;
     const id = meta.rawImdbId ?? "";
-    const category = getNzbdavCategory(type);
-    const episode = parseRequestedEpisode(type, id);
-
-    // Use MD5 lock to prevent parallel downloads of same file
     const lockKey = `stream_build:${md5(downloadUrl)}`;
 
     try {
+        const category = getNzbdavCategory(type);
+        const episode = parseRequestedEpisode(type, id);
+
         const streamData = await getOrCreateNzbdavStream(lockKey, () =>
             buildNzbdavStream({
                 downloadUrl,
@@ -468,21 +427,21 @@ export async function streamNzbdavProxy(keyHash: string, req: Request): Promise<
         if (isNzbdavFail) {
             console.warn("[NZBDAV] Job Failed:", err.failureMessage || msg);
 
-            const fileId = guid || "";
-            if (indexer && fileId) {
-                console.log(`[NZBDAV] Updating NZB status: indexer=${indexer}, fileId=${fileId}`);
-                await updateNzbStatus({ source_indexer: indexer, file_id: fileId }, false, err.failureMessage || msg);
-            }
-
-            await redis.del(redisKey);
+            const bgTasks = [];
+            bgTasks.push(redis.del(redisKey));
 
             if (prowlarrId && downloadUrl) {
                 const searchKey = `prowlarr:search:${id}`;
-                await removeFailedProwlarrEntry(searchKey, downloadUrl);
+                bgTasks.push(removeFailedProwlarrEntry(searchKey, downloadUrl));
             }
 
-            const failureResponse = await streamFailureVideo(req, err);
-            if (failureResponse) return failureResponse;
+            if (indexer && guid) {
+                bgTasks.push(updateNzbStatus({ source_indexer: indexer, file_id: guid }, false, err.failureMessage || msg));
+            }
+
+            Promise.all(bgTasks).catch(e => console.error("Cleanup error", e));
+
+            return (await streamFailureVideo(req, err)) || new Response(JSON.stringify({ error: msg }), { status: 502 });
         } else {
             console.error("[NZBDAV] Proxy error:", msg);
         }

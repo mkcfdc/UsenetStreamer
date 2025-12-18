@@ -4,7 +4,7 @@ import { join } from "jsr:@std/path@1.1.3";
 
 let dbInstance: DatabaseSync | null = null;
 
-function getDb(): DatabaseSync {
+export function getDb(): DatabaseSync {
     if (dbInstance) return dbInstance;
 
     const dataDir = Deno.env.get("DATA_DIR") || join(Deno.cwd(), "data");
@@ -29,6 +29,8 @@ function getDb(): DatabaseSync {
     console.log(`\n%c[Database] %cInitializing sqlite at: ${dbPath}`, "color: blue;", "color: green;");
 
     const db = new DatabaseSync(dbPath);
+
+    db.exec("PRAGMA journal_mode = WAL;");
 
     // Initialize schema
     db.exec(`
@@ -64,6 +66,15 @@ function getDb(): DatabaseSync {
         created_at  TEXT NOT NULL DEFAULT (STRFTIME('%Y-%m-%d %H:%M:%S', 'now')),
         updated_at  TEXT NOT NULL DEFAULT (STRFTIME('%Y-%m-%d %H:%M:%S', 'now'))
     ) STRICT;
+`);
+
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        email TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
 `);
 
     dbInstance = db;

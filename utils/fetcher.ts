@@ -1,7 +1,8 @@
 // deno-lint-ignore-file no-explicit-any
 
 /**
- * Custom Error class to expose status codes and API error responses
+ * Custom Error class that includes the server's response body in the message
+ * for immediate visibility in logs.
  */
 export class HttpError extends Error {
     public status: number;
@@ -11,7 +12,18 @@ export class HttpError extends Error {
     public data: any;
 
     constructor(response: Response, data: any) {
-        super(`Request failed with status ${response.status}: ${response.statusText}`);
+        // Optimization: Append the actual server error text to the message
+        // This ensures logs show "400: API Key Missing" instead of just "400: Bad Request"
+        const serverMessage = typeof data === 'string'
+            ? data
+            : (data?.error || data?.message || JSON.stringify(data));
+
+        const cleanMessage = serverMessage
+            ? `Request failed (${response.status}): ${serverMessage}`
+            : `Request failed with status ${response.status}: ${response.statusText}`;
+
+        super(cleanMessage);
+
         this.name = "HttpError";
         this.status = response.status;
         this.statusText = response.statusText;
@@ -22,11 +34,9 @@ export class HttpError extends Error {
 }
 
 export interface FetcherOptions extends Omit<RequestInit, "body"> {
-    // Allow body to be an object which will be auto-stringified
     body?: any;
     parseJson?: boolean;
     timeoutMs?: number;
-    // Helper for query parameters
     params?: Record<string, string | number | boolean | undefined | null>;
 }
 
@@ -40,23 +50,28 @@ export async function fetcher<T = any>(
         headers: initHeaders,
         params,
         body,
+        method = "GET", // Default to GET explicitly to help logic below
         ...fetchOptions
     } = options;
 
-    // 1. Construct URL with Params
+    // 1. Construct URL with Params (Deduplication Logic)
     const url = new URL(input.toString());
+
     if (params) {
         Object.entries(params).forEach(([key, value]) => {
             if (value !== undefined && value !== null) {
-                url.searchParams.append(key, String(value));
+                // OPTIMIZATION: Use .set() instead of .append().
+                // If 'apikey' is already in the Config.NZBDAV_URL, this prevents 
+                // sending "?apikey=XYZ&apikey=XYZ", which causes 400 Errors on SABnzbd.
+                url.searchParams.set(key, String(value));
             }
         });
     }
 
-    // 2. Prepare Headers (Auto-set JSON headers)
+    // 2. Prepare Headers
     const headers = new Headers(initHeaders);
 
-    // 3. Handle Body transformation (Auto-stringify plain objects)
+    // 3. Body Transformation
     let finalBody = body;
     const isPlainObject = body && typeof body === "object" &&
         !(body instanceof FormData) &&
@@ -70,10 +85,18 @@ export async function fetcher<T = any>(
         }
     }
 
+    // 4. GET Request Sanitation
+    // Strict servers (like some SABnzbd/NZBGet versions) throw 400 if Content-Type is present on GET.
+    if (method.toUpperCase() === "GET") {
+        headers.delete("Content-Type");
+        finalBody = undefined; // Ensure no body is sent on GET
+    }
+
     if (parseJson && !headers.has("Accept")) {
         headers.set("Accept", "application/json");
     }
 
+    // 5. Timeout Handling
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -84,23 +107,26 @@ export async function fetcher<T = any>(
     try {
         const response = await fetch(url.toString(), {
             ...fetchOptions,
+            method,
             headers,
             body: finalBody,
             signal: controller.signal,
         });
 
-        // 5. Unified Error Handling
         if (!response.ok) {
             let errorData;
             try {
                 const contentType = response.headers.get("content-type");
+                // SABnzbd often returns "text/plain" for API errors even if JSON was requested
                 if (contentType?.includes("application/json")) {
                     errorData = await response.json();
                 } else {
                     errorData = await response.text();
+                    // Clean up trailing newlines common in SABnzbd error outputs
+                    errorData = errorData.trim();
                 }
             } catch {
-                errorData = null;
+                errorData = "Unknown error (could not parse body)";
             }
             throw new HttpError(response, errorData);
         }

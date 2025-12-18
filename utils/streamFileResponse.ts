@@ -1,17 +1,21 @@
 import { contentType } from "@std/media-types";
 import { extname } from "@std/path";
 
+// 1. Regex Optimization: Handle optional whitespace per HTTP spec
+const RANGE_REGEX = /^bytes=\s*(\d*)\s*-\s*(\d*)\s*$/;
+const DEFAULT_MIME = "video/mp4";
+
 export async function streamFileResponse(
     req: Request,
     path: string,
     isHead = false,
     logPrefix = "STREAM",
     preStat?: Deno.FileInfo,
-    initialHeaders: Headers = new Headers(),
+    initialHeaders?: Headers, // Changed to optional to allow skipping merge logic
 ): Promise<Response | null> {
-    let stat = preStat;
 
-    // 1. Stat the file
+    // 2. Stat (or use pre-stat)
+    let stat = preStat;
     if (!stat) {
         try {
             stat = await Deno.stat(path);
@@ -23,44 +27,76 @@ export async function streamFileResponse(
     if (!stat.isFile) return null;
 
     const size = stat.size;
+
+    // Optimization: Handle empty files immediately to avoid range math errors
+    if (size === 0) {
+        return new Response("", { status: 200, headers: initialHeaders });
+    }
+
+    const mtime = stat.mtime;
+
+    // 3. Prepare Headers (Plain Object is faster than new Headers())
+    const headers: Record<string, string> = {
+        "Accept-Ranges": "bytes",
+        "Content-Type": contentType(extname(path)) || DEFAULT_MIME
+    };
+
+    // Merge initial headers if provided
+    if (initialHeaders) {
+        initialHeaders.forEach((v, k) => { headers[k] = v; });
+    }
+
+    // ETag & Last-Modified
+    let lastModifiedStr: string | null = null;
+    let etag: string | null = null;
+
+    if (mtime) {
+        lastModifiedStr = mtime.toUTCString();
+        headers["Last-Modified"] = lastModifiedStr;
+        // Optimization: Hex is faster than toString() in some engines, but consistent formatting is key
+        etag = `W/"${size.toString(16)}-${mtime.getTime().toString(16)}"`;
+        headers["ETag"] = etag;
+    }
+
+    // 4. Handle 304 Not Modified
+    // ENABLED FOR HEAD: Browsers check HEAD to validate cache. 304 is valid here.
+    const ifNoneMatch = req.headers.get("If-None-Match");
+    const ifModifiedSince = req.headers.get("If-Modified-Since");
+
+    if (
+        (ifNoneMatch && ifNoneMatch === etag) ||
+        (ifModifiedSince && lastModifiedStr && ifModifiedSince === lastModifiedStr)
+    ) {
+        // 304 Response must not contain a body
+        return new Response(null, { status: 304, headers });
+    }
+
+    // 5. Handle HEAD (Fresh metadata)
+    if (isHead) {
+        headers["Content-Length"] = String(size);
+        return new Response(null, { status: 200, headers });
+    }
+
+    // 6. Calculate Range
     let code = 200;
     let start = 0;
     let end = size - 1;
 
-    // 2. Set base headers
-    const finalHeaders = new Headers(initialHeaders);
-    finalHeaders.set("Accept-Ranges", "bytes");
-
-    // Auto-detect content type or fallback
-    const mime = contentType(extname(path)) || "video/mp4";
-    finalHeaders.set("Content-Type", mime);
-
-    if (stat.mtime) {
-        finalHeaders.set("Last-Modified", stat.mtime.toUTCString());
-    }
-
-    // 3. Handle HEAD request
-    if (isHead) {
-        finalHeaders.set("Content-Length", size.toString());
-        return new Response(null, { status: 200, headers: finalHeaders });
-    }
-
-    // 4. Handle Range request
     const rangeHeader = req.headers.get("Range");
     if (rangeHeader) {
-        const rangeMatch = rangeHeader.match(/^bytes=(\d*)-(\d*)$/);
-
-        if (rangeMatch) {
-            const startStr = rangeMatch[1];
-            const endStr = rangeMatch[2];
+        const match = RANGE_REGEX.exec(rangeHeader);
+        if (match) {
+            const startStr = match[1];
+            const endStr = match[2];
 
             if (startStr && !endStr) {
                 // bytes=100-
                 start = Number(startStr);
                 end = size - 1;
             } else if (!startStr && endStr) {
-                // bytes=-100 (suffix range: last 100 bytes)
-                start = size - Number(endStr);
+                // bytes=-100
+                const suffix = Number(endStr);
+                start = Math.max(0, size - suffix);
                 end = size - 1;
             } else if (startStr && endStr) {
                 // bytes=100-200
@@ -68,74 +104,72 @@ export async function streamFileResponse(
                 end = Number(endStr);
             }
 
-            // Validate range
+            // Valid Range?
             if (start >= size || end >= size || start > end) {
-                finalHeaders.set("Content-Range", `bytes */${size}`);
-                return new Response(null, { status: 416, headers: finalHeaders });
+                headers["Content-Range"] = `bytes */${size}`;
+                return new Response(null, { status: 416, headers });
             }
 
             code = 206;
+            headers["Content-Range"] = `bytes ${start}-${end}/${size}`;
         }
     }
 
-    const length = end - start + 1;
-    finalHeaders.set("Content-Length", length.toString());
+    const contentLength = end - start + 1;
+    headers["Content-Length"] = String(contentLength);
 
-    if (code === 206) {
-        finalHeaders.set("Content-Range", `bytes ${start}-${end}/${size}`);
+    if (code !== 200) {
+        console.log(`[${logPrefix}] ${code} ${start}-${end}/${size} -> ${path}`);
     }
 
-    console.log(`[${logPrefix}] ${code} ${start}-${end}/${size} ${path}`);
-
+    // 7. Streaming Strategy
     try {
         const file = await Deno.open(path, { read: true });
 
-        // Seek if necessary
+        // Seek
         if (start > 0) {
             await file.seek(start, Deno.SeekMode.Start);
         }
 
-        // 5. Stream with Cleanup
-        // We use a transform stream to slice the content and ensure the file is closed
-        // on both completion (flush) and client disconnection (cancel).
+        // OPTIMIZATION: Zero-Overhead "Rest of File"
+        // Native Deno stream is zero-copy and handles closing automatically.
+        if (end === size - 1) {
+            return new Response(file.readable, { status: code, headers });
+        }
+
+        // SLICING STRATEGY: Partial Range
         let bytesSent = 0;
 
-        const limitedStream = file.readable.pipeThrough(new TransformStream({
+        const slicedStream = file.readable.pipeThrough(new TransformStream({
             transform(chunk, controller) {
-                const remaining = length - bytesSent;
+                const remaining = contentLength - bytesSent;
 
                 if (remaining <= 0) {
                     controller.terminate();
                     return;
                 }
 
-                if (chunk.byteLength > remaining) {
+                if (chunk.byteLength <= remaining) {
+                    controller.enqueue(chunk);
+                    bytesSent += chunk.byteLength;
+                } else {
+                    // Zero-copy subarray (view), not a clone
                     controller.enqueue(chunk.subarray(0, remaining));
                     bytesSent += remaining;
                     controller.terminate();
-                } else {
-                    controller.enqueue(chunk);
-                    bytesSent += chunk.byteLength;
                 }
             },
-            flush() {
-                file.close();
-            },
-            cancel() {
-                // IMPORTANT: Close file if client disconnects or stream aborts
-                file.close();
-            }
+            // Clean up file handle on completion or error
+            flush() { file.close(); },
+            cancel() { file.close(); }
         }));
 
-        return new Response(limitedStream, {
-            status: code,
-            headers: finalHeaders,
-        });
+        return new Response(slicedStream, { status: code, headers });
 
     } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        if (!msg.includes("Broken pipe") && !msg.includes("aborted")) {
-            console.error(`[${logPrefix}] Stream error:`, err);
+        if (!msg.includes("Broken pipe") && !msg.includes("aborted") && !msg.includes("Connection reset")) {
+            console.error(`[${logPrefix}] Error:`, err);
         }
         return null;
     }

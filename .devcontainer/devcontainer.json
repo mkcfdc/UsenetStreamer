@@ -8,8 +8,7 @@
       "extensions": [
         "denoland.vscode-deno",
         "esbenp.prettier-vscode",
-        "Redis.redis-for-vscode",
-        "qwtel.sqlite-viewer"
+        "Redis.redis-for-vscode"
       ],
       "settings": {
         "deno.enable": true,
@@ -24,7 +23,9 @@
   ],
   "runArgs": [
     "--volume",
-    "/run/host-services/ssh-auth.sock:/run/host-services/ssh-auth.sock"
+    "/run/host-services/ssh-auth.sock:/run/host-services/ssh-auth.sock",
+    "-p",
+    "7001:7001"
   ],
   "containerEnv": {
     "SSH_AUTH_SOCK": "/run/host-services/ssh-auth.sock"

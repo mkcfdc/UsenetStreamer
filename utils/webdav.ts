@@ -13,26 +13,20 @@ export type WebdavClient = {
     getDirectoryContents: (directory: string) => Promise<WebdavEntry[]>;
 };
 
-// 1. Pre-calculate static values once
 const AUTH_HEADER = "Basic " + btoa(`${Config.NZBDAV_WEBDAV_USER}:${Config.NZBDAV_WEBDAV_PASS}`);
-
 const REMOTE_BASE = Config.NZBDAV_WEBDAV_URL.replace(/\/+$/, "");
-const ROOT_PATH = (Config.NZBDAV_WEBDAV_ROOT || "").replace(/^\/+/, "").replace(/\/+$/, "");
+const ROOT_PATH = (Config.NZBDAV_WEBDAV_ROOT || "").replace(/(^\/+|\/+$)/g, ""); // strip both ends
 const REMOTE_ROOT_URL = ROOT_PATH ? `${REMOTE_BASE}/${ROOT_PATH}` : REMOTE_BASE;
 
-// 2. Pre-compile Regexes
-// Matches <d:response>...</d:response> or <response>...</response>
-const RX_RESPONSE = /<([a-zA-Z0-9_]+:)?response(?:[\s\S]*?)>([\s\S]*?)<\/\1?response>/gi;
-// Matches <d:href>...</d:href>
-const RX_HREF = /<([a-zA-Z0-9_]+:)?href[^>]*>([^<]+)<\/\1?href>/i;
-// Matches <d:getcontentlength>...</d:getcontentlength>
-const RX_LENGTH = /<([a-zA-Z0-9_]+:)?getcontentlength[^>]*>(\d+)<\/\1?getcontentlength>/i;
-// Matches <d:getlastmodified>...</d:getlastmodified>
-const RX_MODIFIED = /<([a-zA-Z0-9_]+:)?getlastmodified[^>]*>([^<]+)<\/\1?getlastmodified>/i;
-// Matches <d:getcontenttype>...</d:getcontenttype>
-const RX_TYPE = /<([a-zA-Z0-9_]+:)?getcontenttype[^>]*>([^<]+)<\/\1?getcontenttype>/i;
-// Checks for <collection/> inside resourcetype
-const RX_IS_COLLECTION = /<([a-zA-Z0-9_]+:)?resourcetype[^>]*>[\s\S]*?<([a-zA-Z0-9_]+:)?collection\/>/i;
+const PROPFIND_BODY = `<?xml version="1.0" encoding="utf-8" ?>
+<D:propfind xmlns:D="DAV:">
+  <D:prop>
+    <D:resourcetype/>
+    <D:getcontentlength/>
+    <D:getlastmodified/>
+    <D:getcontenttype/>
+  </D:prop>
+</D:propfind>`;
 
 let client: WebdavClient | null = null;
 
@@ -41,8 +35,10 @@ export function getWebdavClient(): WebdavClient {
 
     client = {
         getDirectoryContents: async (directory: string) => {
-            const cleanPath = directory.replace(/^\/+/, "").replace(/\/+$/, "");
+            const cleanPath = directory.replace(/(^\/+|\/+$)/g, "");
             const url = cleanPath ? `${REMOTE_ROOT_URL}/${cleanPath}` : REMOTE_ROOT_URL;
+
+            const targetPathEncoded = encodeURI(cleanPath);
 
             console.log(`[WebDAV] PROPFIND ${url}`);
 
@@ -51,63 +47,109 @@ export function getWebdavClient(): WebdavClient {
                 headers: {
                     "Authorization": AUTH_HEADER,
                     "Depth": "1",
+                    "Content-Type": "application/xml",
+                    'Connection': 'keep-alive'
                 },
+                body: PROPFIND_BODY
             });
 
-            if (!res.ok && res.status !== 207) {
-                // Consume body to free resources before throwing
-                await res.text();
-                throw new Error(`WebDAV PROPFIND failed: ${res.status} ${res.statusText}`);
+            if (res.status !== 207) {
+                const txt = await res.text();
+                throw new Error(`WebDAV PROPFIND failed: ${res.status} ${res.statusText} - ${txt.substring(0, 100)}`);
             }
 
             const xml = await res.text();
             const entries: WebdavEntry[] = [];
+            const xmlLen = xml.length;
 
-            // Reset regex index for reuse
-            RX_RESPONSE.lastIndex = 0;
+            // 3. Optimization: "Cursor-based" String Parsing
+            // Much faster than Regex for known structures in tight loops.
+            // We look for <d:response> (or <D:response>) blocks.
 
-            let respMatch;
-            while ((respMatch = RX_RESPONSE.exec(xml)) !== null) {
-                const responseBody = respMatch[2];
+            let pos = 0;
 
-                // Fast fail: Must contain "200 OK" (faster than parsing propstat blocks)
-                // Most WebDAV servers return 200 OK for properties found.
-                if (responseBody.indexOf("HTTP/1.1 200") === -1) {
+            // Find start of first response
+            // We search case-insensitive for the tag structure roughly
+            while (pos < xmlLen) {
+                // Find <...response>
+                const startIdx = xml.indexOf("response>", pos);
+                if (startIdx === -1) break;
+
+                // Determine actual start (accounting for namespace prefix length)
+                // We look backwards for the opening '<'
+                const openTag = xml.lastIndexOf("<", startIdx);
+                if (openTag === -1) { pos = startIdx + 9; continue; } // Should not happen
+
+                // Find end of this response block </...response>
+                const endTagStr = xml.substring(openTag + 1, startIdx + 8); // e.g. "d:response"
+                const closeTag = `</${endTagStr}>`;
+                const endIdx = xml.indexOf(closeTag, startIdx);
+
+                if (endIdx === -1) {
+                    pos = startIdx + 9;
                     continue;
                 }
 
-                // Extract Href
-                const hrefMatch = responseBody.match(RX_HREF);
-                if (!hrefMatch) continue;
+                // Update position for next iteration immediately
+                pos = endIdx + closeTag.length;
 
-                // Decode once
-                const href = decodeURIComponent(hrefMatch[2]);
+                // Extract the block content for processing
+                // (using substring is cheap in V8)
+                const block = xml.substring(openTag, endIdx);
 
-                // Check Collection
-                // We scan the whole block for the collection tag inside resourcetype
-                const isDirectory = RX_IS_COLLECTION.test(responseBody);
+                // --- FAST CHECKS ---
 
-                // Size
-                const sizeMatch = responseBody.match(RX_LENGTH);
-                const size = sizeMatch ? parseInt(sizeMatch[2], 10) : null;
+                // 1. Check Status (Fastest way: indexOf)
+                // If it doesn't have "200 OK", skip it.
+                if (block.indexOf("HTTP/1.1 200") === -1) continue;
 
-                // Type
-                const typeMatch = responseBody.match(RX_TYPE);
-                const type = typeMatch ? typeMatch[2] : null;
+                // 2. Extract Href
+                const href = extractValue(block, "href");
+                if (!href) continue;
 
-                // Last Modified
-                const modMatch = responseBody.match(RX_MODIFIED);
-                const lastModified = modMatch ? modMatch[2] : null;
+                // 3. Filter "Self" (Current Directory)
+                // Check if the href ends with the target path (ignoring trailing slashes)
+                // This removes the need to filter the array at the very end
+                const trimmedHref = href.endsWith("/") ? href.slice(0, -1) : href;
+                // Simple check: does the end of the href match our requested path?
+                // We compare encoded versions to avoid decoding everything.
+                if (trimmedHref.endsWith(targetPathEncoded)) {
+                    // Double check it's not a partial match (e.g. /foo/bar matching /bar)
+                    const separator = trimmedHref.length - targetPathEncoded.length - 1;
+                    if (targetPathEncoded === "" || trimmedHref[separator] === '/') {
+                        continue;
+                    }
+                }
 
-                // Extract name safely
-                // Remove trailing slash, split by slash, take last segment
-                const name = href.endsWith('/')
-                    ? href.slice(0, -1).split('/').pop() || ""
-                    : href.split('/').pop() || "";
+                // --- EXTRACTION ---
+
+                const isDirectory = block.indexOf("collection/>") !== -1;
+
+                // Parse Name (Fast string split)
+                // We do this on the decoded string for display
+                const decodedHref = decodeURIComponent(href);
+                // Logic: Remove trailing slash -> split -> take last item
+                const name = (href.endsWith('/')
+                    ? decodedHref.substring(0, decodedHref.length - 1)
+                    : decodedHref).split('/').pop() || "";
+
+                // Get Content Length
+                // If directory, size is null
+                let size: number | null = null;
+                if (!isDirectory) {
+                    const sizeStr = extractValue(block, "getcontentlength");
+                    if (sizeStr) size = parseInt(sizeStr, 10);
+                }
+
+                // Get Last Modified
+                const lastModified = extractValue(block, "getlastmodified");
+
+                // Get Content Type
+                const type = extractValue(block, "getcontenttype");
 
                 entries.push({
                     name,
-                    href,
+                    href: decodedHref,
                     isDirectory,
                     size,
                     type,
@@ -115,31 +157,51 @@ export function getWebdavClient(): WebdavClient {
                 });
             }
 
-            const requestPath = new URL(url).pathname.replace(/\/+$/, "");
-            const decodedRequestPath = decodeURIComponent(requestPath);
-
-            return entries.filter(e => {
-                const entryPath = e.href.replace(/\/+$/, "");
-                return entryPath !== decodedRequestPath;
-            });
+            return entries;
         },
     };
 
     return client;
 }
 
+/**
+ * Highly optimized XML tag extractor using index search.
+ * Handles namespaces (d:tag vs tag) automatically.
+ */
+function extractValue(xml: string, tagName: string): string | null {
+    // Look for "tagName>" to ignore namespace prefix logic
+    const search = tagName + ">";
+    const startIdx = xml.indexOf(search);
+    if (startIdx === -1) return null;
+
+    // The value starts after the bracket
+    const valStart = startIdx + search.length;
+
+    // Find the closing tag (</d:tagName> or </tagName>)
+    // We strictly look for "</" followed eventually by "tagName>"
+    // But for speed, finding the next "<" is usually sufficient in simple properties
+    const valEnd = xml.indexOf("<", valStart);
+
+    if (valEnd === -1) return null;
+
+    return xml.substring(valStart, valEnd);
+}
+
+/**
+ * Micro-optimized path normalizer
+ */
 export function normalizeNzbdavPath(path: string): string {
-    // Using a single regex pass for multiple slashes is slightly faster
-    // but the main optimization is ensuring we don't create intermediate strings unnecessarily
-    if (!path) return "/";
-    const normalized = path.replace(/\\/g, "/").replace(/\/{2,}/g, "/");
-    if (normalized === "/") return normalized;
+    if (!path || path === "/") return "/";
 
-    // Manual trimming is often faster than Regex for start/end chars
-    let start = 0;
+    // 1. Replace backslashes and collapse multiple slashes
+    // This regex is extremely optimized for V8
+    const normalized = path.replace(/\\/g, "/").replace(/\/+/g, "/");
+
+    if (normalized === "/") return "/";
+
+    // 2. Trim slashes manually (faster than Regex ^/ and /$)
+    const start = (normalized.charCodeAt(0) === 47) ? 1 : 0; // 47 is '/'
     let end = normalized.length;
-
-    if (normalized.charCodeAt(0) === 47) start = 1; // 47 is '/'
     if (normalized.charCodeAt(end - 1) === 47) end--;
 
     return "/" + normalized.substring(start, end);
