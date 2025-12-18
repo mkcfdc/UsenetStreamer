@@ -1,7 +1,6 @@
 import { contentType } from "@std/media-types";
 import { extname } from "@std/path";
 
-// 1. Regex Optimization: Handle optional whitespace per HTTP spec
 const RANGE_REGEX = /^bytes=\s*(\d*)\s*-\s*(\d*)\s*$/;
 const DEFAULT_MIME = "video/mp4";
 
@@ -11,10 +10,8 @@ export async function streamFileResponse(
     isHead = false,
     logPrefix = "STREAM",
     preStat?: Deno.FileInfo,
-    initialHeaders?: Headers, // Changed to optional to allow skipping merge logic
+    initialHeaders?: Headers,
 ): Promise<Response | null> {
-
-    // 2. Stat (or use pre-stat)
     let stat = preStat;
     if (!stat) {
         try {
@@ -27,57 +24,45 @@ export async function streamFileResponse(
     if (!stat.isFile) return null;
 
     const size = stat.size;
-
-    // Optimization: Handle empty files immediately to avoid range math errors
     if (size === 0) {
-        return new Response("", { status: 200, headers: initialHeaders });
+        return new Response(isHead ? null : "", { status: 200, headers: initialHeaders });
     }
 
     const mtime = stat.mtime;
 
-    // 3. Prepare Headers (Plain Object is faster than new Headers())
-    const headers: Record<string, string> = {
-        "Accept-Ranges": "bytes",
-        "Content-Type": contentType(extname(path)) || DEFAULT_MIME
-    };
+    const headers = new Headers();
+    headers.set("Accept-Ranges", "bytes");
+    headers.set("Content-Type", contentType(extname(path)) || DEFAULT_MIME);
 
-    // Merge initial headers if provided
     if (initialHeaders) {
-        initialHeaders.forEach((v, k) => { headers[k] = v; });
+        for (const [k, v] of initialHeaders.entries()) headers.set(k, v);
     }
 
-    // ETag & Last-Modified
     let lastModifiedStr: string | null = null;
     let etag: string | null = null;
 
     if (mtime) {
         lastModifiedStr = mtime.toUTCString();
-        headers["Last-Modified"] = lastModifiedStr;
-        // Optimization: Hex is faster than toString() in some engines, but consistent formatting is key
+        headers.set("Last-Modified", lastModifiedStr);
         etag = `W/"${size.toString(16)}-${mtime.getTime().toString(16)}"`;
-        headers["ETag"] = etag;
+        headers.set("ETag", etag);
     }
 
-    // 4. Handle 304 Not Modified
-    // ENABLED FOR HEAD: Browsers check HEAD to validate cache. 304 is valid here.
     const ifNoneMatch = req.headers.get("If-None-Match");
     const ifModifiedSince = req.headers.get("If-Modified-Since");
 
     if (
-        (ifNoneMatch && ifNoneMatch === etag) ||
-        (ifModifiedSince && lastModifiedStr && ifModifiedSince === lastModifiedStr)
+        (etag && ifNoneMatch && ifNoneMatch === etag) ||
+        (lastModifiedStr && ifModifiedSince && ifModifiedSince === lastModifiedStr)
     ) {
-        // 304 Response must not contain a body
         return new Response(null, { status: 304, headers });
     }
 
-    // 5. Handle HEAD (Fresh metadata)
     if (isHead) {
-        headers["Content-Length"] = String(size);
+        headers.set("Content-Length", String(size));
         return new Response(null, { status: 200, headers });
     }
 
-    // 6. Calculate Range
     let code = 200;
     let start = 0;
     let end = size - 1;
@@ -90,60 +75,63 @@ export async function streamFileResponse(
             const endStr = match[2];
 
             if (startStr && !endStr) {
-                // bytes=100-
                 start = Number(startStr);
                 end = size - 1;
             } else if (!startStr && endStr) {
-                // bytes=-100
                 const suffix = Number(endStr);
                 start = Math.max(0, size - suffix);
                 end = size - 1;
             } else if (startStr && endStr) {
-                // bytes=100-200
                 start = Number(startStr);
                 end = Number(endStr);
             }
 
-            // Valid Range?
             if (start >= size || end >= size || start > end) {
-                headers["Content-Range"] = `bytes */${size}`;
+                headers.set("Content-Range", `bytes */${size}`);
                 return new Response(null, { status: 416, headers });
             }
 
             code = 206;
-            headers["Content-Range"] = `bytes ${start}-${end}/${size}`;
+            headers.set("Content-Range", `bytes ${start}-${end}/${size}`);
         }
     }
 
     const contentLength = end - start + 1;
-    headers["Content-Length"] = String(contentLength);
+    headers.set("Content-Length", String(contentLength));
 
-    if (code !== 200) {
+    if (code === 206) {
         console.log(`[${logPrefix}] ${code} ${start}-${end}/${size} -> ${path}`);
     }
 
-    // 7. Streaming Strategy
-    try {
-        const file = await Deno.open(path, { read: true });
+    let file: Deno.FsFile | undefined;
 
-        // Seek
+    try {
+        file = await Deno.open(path, { read: true });
+
         if (start > 0) {
             await file.seek(start, Deno.SeekMode.Start);
         }
 
-        // OPTIMIZATION: Zero-Overhead "Rest of File"
-        // Native Deno stream is zero-copy and handles closing automatically.
+        // Fast path: stream "rest of file" without extra transforms.
         if (end === size - 1) {
-            return new Response(file.readable, { status: code, headers });
+            const body = file.readable;
+            req.signal?.addEventListener?.("abort", () => {
+                try {
+                    file?.close();
+                } catch {
+                    // ignore
+                }
+            }, { once: true });
+
+            return new Response(body, { status: code, headers });
         }
 
-        // SLICING STRATEGY: Partial Range
+        // Partial-range path: limit bytes via TransformStream and ensure close on all paths.
         let bytesSent = 0;
 
-        const slicedStream = file.readable.pipeThrough(new TransformStream({
+        const limiter = new TransformStream<Uint8Array, Uint8Array>({
             transform(chunk, controller) {
                 const remaining = contentLength - bytesSent;
-
                 if (remaining <= 0) {
                     controller.terminate();
                     return;
@@ -152,21 +140,43 @@ export async function streamFileResponse(
                 if (chunk.byteLength <= remaining) {
                     controller.enqueue(chunk);
                     bytesSent += chunk.byteLength;
-                } else {
-                    // Zero-copy subarray (view), not a clone
-                    controller.enqueue(chunk.subarray(0, remaining));
-                    bytesSent += remaining;
-                    controller.terminate();
+                    return;
+                }
+
+                controller.enqueue(chunk.subarray(0, remaining));
+                bytesSent += remaining;
+                controller.terminate();
+            },
+            flush() {
+                try {
+                    file?.close();
+                } catch {
+                    // ignore
                 }
             },
-            // Clean up file handle on completion or error
-            flush() { file.close(); },
-            cancel() { file.close(); }
-        }));
+        });
 
-        return new Response(slicedStream, { status: code, headers });
+        req.signal?.addEventListener?.("abort", () => {
+            try {
+                file?.close();
+            } catch {
+                // ignore
+            }
+            try {
+                limiter.writable.abort();
+            } catch {
+                // ignore
+            }
+        }, { once: true });
 
+        return new Response(file.readable.pipeThrough(limiter), { status: code, headers });
     } catch (err) {
+        try {
+            file?.close();
+        } catch {
+            // ignore
+        }
+
         const msg = err instanceof Error ? err.message : String(err);
         if (!msg.includes("Broken pipe") && !msg.includes("aborted") && !msg.includes("Connection reset")) {
             console.error(`[${logPrefix}] Error:`, err);

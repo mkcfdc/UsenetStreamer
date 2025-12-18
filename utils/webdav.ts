@@ -32,7 +32,6 @@ const PROPFIND_BODY = `<?xml version="1.0" encoding="utf-8" ?>
 
 let client: WebdavClient | null = null;
 
-// Reuse sockets: PROPFIND is called a lot during scans/polls.
 const httpClient = Deno.createHttpClient({
     poolIdleTimeout: 60_000,
     poolMaxIdlePerHost: 50,
@@ -64,8 +63,6 @@ export function getWebdavClient(): WebdavClient {
             const cleanPath = directory.replace(/(^\/+|\/+$)/g, "");
             const url = cleanPath ? `${REMOTE_ROOT_URL}/${cleanPath}` : REMOTE_ROOT_URL;
 
-            // Encode each segment so comparisons with href suffixes are meaningful.
-            // encodeURI(cleanPath) does NOT encode "/" and is inconsistent for matching.
             const targetPathEncoded = cleanPath
                 ? cleanPath.split("/").map(encodeURIComponent).join("/")
                 : "";
@@ -95,7 +92,6 @@ export function getWebdavClient(): WebdavClient {
             let pos = 0;
 
             while (pos < xmlLen) {
-                // Find "...response>" occurrence
                 const startIdx = xml.indexOf("response>", pos);
                 if (startIdx === -1) break;
 
@@ -121,14 +117,11 @@ export function getWebdavClient(): WebdavClient {
 
                 const block = xml.substring(openTag, endIdx);
 
-                // Must contain a 200 OK propstat somewhere.
                 if (block.indexOf("200 OK") === -1 && block.indexOf(" 200 ") === -1) continue;
 
                 const href = extractValue(block, "href");
                 if (!href) continue;
 
-                // Filter the "self" entry for the directory we just listed.
-                // Compare against encoded suffix; handle trailing slash.
                 const hrefTrimmed = href.endsWith("/") ? href.slice(0, -1) : href;
 
                 if (targetPathEncoded) {
@@ -182,11 +175,6 @@ export function getWebdavClient(): WebdavClient {
     return client;
 }
 
-/**
- * Fast XML tag extractor:
- * searches for "tagName>" and returns until next "<"
- * (works for simple DAV properties)
- */
 function extractValue(xml: string, tagName: string): string | null {
     const search = tagName + ">";
     const startIdx = xml.indexOf(search);
@@ -199,9 +187,6 @@ function extractValue(xml: string, tagName: string): string | null {
     return xml.substring(valStart, valEnd);
 }
 
-/**
- * Micro-optimized path normalizer
- */
 export function normalizeNzbdavPath(path: string): string {
     if (!path || path === "/") return "/";
 
