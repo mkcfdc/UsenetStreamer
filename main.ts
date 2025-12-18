@@ -43,17 +43,27 @@ const REGEX_JSON_EXT = /\.json$/;
 
 // Resolution Lookup Maps (Order matters: checked top-down in loop)
 const RES_RANK_MAP: Record<string, number> = {
-    "4k": 4, "2160": 4, "uhd": 4,
-    "2k": 3, "1440": 3,
-    "1080": 2, "fhd": 2,
-    "720": 1, "hd": 1
+    "4k": 4,
+    "2160": 4,
+    "uhd": 4,
+    "2k": 3,
+    "1440": 3,
+    "1080": 2,
+    "fhd": 2,
+    "720": 1,
+    "hd": 1,
 };
 
 const RES_ICON_MAP: Record<string, string> = {
-    "4k": "🔥 4K UHD", "2160": "🔥 4K UHD", "uhd": "🔥 4K UHD",
-    "2k": "🔥 2K", "1440": "🔥 2K",
-    "1080": "🚀 FHD", "fhd": "🚀 FHD",
-    "720": "💿 HD", "hd": "💿 HD"
+    "4k": "🔥 4K UHD",
+    "2160": "🔥 4K UHD",
+    "uhd": "🔥 4K UHD",
+    "2k": "🔥 2K",
+    "1440": "🔥 2K",
+    "1080": "🚀 FHD",
+    "fhd": "🚀 FHD",
+    "720": "💿 HD",
+    "hd": "💿 HD",
 };
 
 const PATTERNS = {
@@ -79,18 +89,53 @@ function parseRedisJson<T>(raw: unknown): T | null {
 }
 
 /**
+ * Robust RedisJSON scalar decoder for pipelined JSON.GET results.
+ * Handles:
+ * - null
+ * - '"/path/file.mkv"' (stringified JSON)
+ * - '["/path/file.mkv"]' (JSON array)
+ * - ["/path/file.mkv"] (client-decoded array)
+ * - ["\"/path/file.mkv\""] (array containing stringified JSON)
+ */
+function parseRedisJsonScalar(raw: unknown): string | null {
+    if (raw == null) return null;
+
+    try {
+        if (Array.isArray(raw)) {
+            if (raw.length === 0) return null;
+            return parseRedisJsonScalar(raw[0]);
+        }
+
+        if (typeof raw === "string") {
+            const s = raw.trim();
+            if (!s || s === "null") return null;
+
+            try {
+                const decoded = JSON.parse(s);
+                if (typeof decoded === "string" && decoded.length) return decoded;
+                if (Array.isArray(decoded) && typeof decoded[0] === "string") return decoded[0];
+                return null;
+            } catch {
+                return s;
+            }
+        }
+
+        if (typeof raw === "number") return String(raw);
+        return null;
+    } catch {
+        return null;
+    }
+}
+
+/**
  * Optimized GUID extraction using Regex instead of new URL()
  */
 function extractGuidFromUrl(urlString: string): string {
-    if (Config.NZBHYDRA_URL && Config.NZBHYDRA_API_KEY) {
-        return urlString;
-    }
+    if (Config.NZBHYDRA_URL && Config.NZBHYDRA_API_KEY) return urlString;
 
-    // Fast path: Regex check for query param
     const queryMatch = REGEX_GUID_PARAM.exec(urlString);
     if (queryMatch) return queryMatch[1];
 
-    // Fast path: Regex check for last path segment
     const pathMatch = REGEX_LAST_SEGMENT.exec(urlString);
     if (pathMatch) return pathMatch[1];
 
@@ -113,11 +158,15 @@ function getResolutionIcon(resolution: string): string {
     return "💩 Unknown";
 }
 
+function normalizeStreamName(s: string): string {
+    return s.replace(/\s+/g, " ").trim();
+}
+
 // --- MAIN HANDLER ---
 
 async function handler(req: Request): Promise<Response> {
     const method = req.method;
-    const urlString = req.url; // Use string for pattern matching to avoid unnecessary parsing
+    const urlString = req.url;
 
     // --- GLOBAL CORS (OPTIONS) ---
     if (method === "OPTIONS") {
@@ -139,7 +188,6 @@ async function handler(req: Request): Promise<Response> {
                 const iconPath = join(Deno.cwd(), "public", "assets", "icon.png");
                 ICON_CACHE = await Deno.readFile(iconPath);
             }
-            // Fix: Cast to 'any' or 'BodyInit' to satisfy TS compiler
             return new Response(ICON_CACHE as any, {
                 headers: {
                     "Content-Type": "image/png",
@@ -160,7 +208,7 @@ async function handler(req: Request): Promise<Response> {
     if (url.pathname === "/" && method === "GET") {
         return new Response(
             "Hello, the server is running! This is using the mkcfdc version of UsenetStreamer by Sanket9225.",
-            { headers: { "Content-Type": "text/plain" } }
+            { headers: { "Content-Type": "text/plain" } },
         );
     }
 
@@ -207,11 +255,9 @@ async function handler(req: Request): Promise<Response> {
             const itemsToCheck: any[] = [];
             const resultsWithGuid: ProcessedResult[] = [];
 
-            // Single pass to prepare data
             for (const r of results) {
                 if (r.indexer && r.guid) {
                     const guid = extractGuidFromUrl(r.guid);
-                    // Store the extracted GUID to avoid re-extracting later
                     resultsWithGuid.push({ result: r, guid, indexer: r.indexer });
                     itemsToCheck.push({ source_indexer: r.indexer, file_id: guid });
                 }
@@ -225,18 +271,15 @@ async function handler(req: Request): Promise<Response> {
             const grouped = new Map<string, any[]>();
 
             for (const { result: r, guid, indexer } of resultsWithGuid) {
-                // Key construction: Force lowercase once
                 const key = `${indexer.toLowerCase()}:${guid}`;
                 const status = nzbData[key];
 
                 r.is_complete = status?.is_complete ?? null;
-                // Optimization: Fail fast
                 if (r.is_complete === false) continue;
 
                 r.cache_hit = status?.cache_hit ?? false;
                 r.last_updated = status?.last_updated ?? null;
 
-                // Heavy lifting (Parsing) only done for valid items
                 const parsed = parseRelease(r.title, type === "series");
                 const { resolution, lines } = formatVideoCard(parsed, {
                     size: (r.size / (1024 ** 3)).toFixed(2).replace(/\.?0+$/, ""),
@@ -249,46 +292,48 @@ async function handler(req: Request): Promise<Response> {
 
                 r.resolution = resolution;
                 r.lines = lines;
-                r.extractedGuid = guid; // Attach for later usage
+                r.extractedGuid = guid;
 
                 if (!grouped.has(resolution)) grouped.set(resolution, []);
                 grouped.get(resolution)!.push(r);
             }
 
             // 6. Sort & Flatten
-            // Sort inner arrays by age then size, take top 5, then flat, then sort by resolution rank
             const filtered = Array.from(grouped.values())
-                .map(arr => arr.sort((a, b) => (a.age - b.age) || (b.size - a.size)).slice(0, 5))
+                .map((arr) => arr.sort((a, b) => (a.age - b.age) || (b.size - a.size)).slice(0, 5))
                 .flat()
                 .sort((a, b) => getResolutionRank(b.resolution) - getResolutionRank(a.resolution));
 
-            // 7. Redis Cache Operations
+            // 7. Redis Cache Operations (keep original behavior + improve lightning bolt checks)
+            //
+            // Requirement: show ⚡ if Redis has streams:${hash}.viewPath
+            // Keep original: always JSON.SET (NX) + EXPIRE in a pipeline (very fast)
+            // Optimization: pipeline reads viewPath only once, then NX sets for misses only
             const getPipeline = redis.pipeline();
             const setPipeline = redis.pipeline();
             const streams: Stream[] = [];
+            const USE_NNTP = Config.USE_STREMIO_NNTP;
 
-            // Batch GET requests
             for (const r of filtered) {
-                // Pre-calc MD5 once
                 r.hash = md5(r.downloadUrl);
                 getPipeline.call("JSON.GET", `streams:${r.hash}`, "$.viewPath");
             }
 
             const cacheChecks = await getPipeline.exec();
-            const USE_NNTP = Config.USE_STREMIO_NNTP;
 
             for (let i = 0; i < filtered.length; i++) {
                 const r = filtered[i];
-                const hash = r.hash; // Reuse pre-calced hash
+                const hash = r.hash;
                 const key = `streams:${hash}`;
 
-                const cacheResult = cacheChecks?.[i]?.[1];
-                const hasViewPath = Array.isArray(cacheResult) && cacheResult.length > 0 && cacheResult[0];
+                const viewPathRaw = cacheChecks?.[i]?.[1];
+                const viewPath = parseRedisJsonScalar(viewPathRaw);
+                const hasViewPath = !!(viewPath && viewPath.length > 0);
+
                 const prefix = hasViewPath ? "⚡" : "";
 
-                // Construct Stream Object
                 const streamObj: Stream = {
-                    name: `${getResolutionIcon(r.resolution)} ${prefix} ${r.resolution}`,
+                    name: normalizeStreamName(`${getResolutionIcon(r.resolution)} ${prefix} ${r.resolution}`),
                     title: r.lines,
                     size: r.size,
                 };
@@ -302,33 +347,31 @@ async function handler(req: Request): Promise<Response> {
 
                 streams.push(streamObj);
 
-                // Queue SET operation if needed
-                if (!hasViewPath) {
-                    setPipeline.call(
-                        "JSON.SET", key, "$",
-                        JSON.stringify({
-                            downloadUrl: r.downloadUrl,
-                            title: r.title,
-                            size: r.size,
-                            guid: r.extractedGuid,
-                            indexer: r.indexer,
-                            type,
-                            fileName: r.fileName,
-                            rawImdbId: decoded,
-                        }),
-                        "NX"
-                    );
-                    setPipeline.expire(key, 172800); // 48 hours
-                }
+                // Keep original semantics:
+                // - write metadata with NX (do not overwrite any existing record, including viewPath/status)
+                // - refresh TTL (expire) unconditionally
+                setPipeline.call(
+                    "JSON.SET",
+                    key,
+                    "$",
+                    JSON.stringify({
+                        downloadUrl: r.downloadUrl,
+                        title: r.title,
+                        size: r.size,
+                        guid: r.extractedGuid,
+                        indexer: r.indexer,
+                        type,
+                        fileName: r.fileName,
+                        rawImdbId: decoded,
+                    }),
+                    "NX",
+                );
+                setPipeline.expire(key, 172800);
             }
 
-            // Execute writes
-            if (filtered.length > 0) {
-                await setPipeline.exec();
-            }
+            if (filtered.length > 0) await setPipeline.exec();
 
             return jsonResponse({ streams });
-
         } catch (err) {
             console.error("Stream list error:", err);
             return jsonResponse({ error: "Failed to load streams" }, 502);
@@ -359,10 +402,9 @@ async function handler(req: Request): Promise<Response> {
         const resolvedKey = `${redisKey}:resolved`;
 
         try {
-            // Parallel fetch: Get Metadata and Resolved URL Cache
             const [dataRaw, cachedResolvedUrl] = await Promise.all([
                 redis.call("JSON.GET", redisKey, "$"),
-                redis.get(resolvedKey)
+                redis.get(resolvedKey),
             ]);
 
             const data = parseRedisJson<{ downloadUrl?: string }>(dataRaw);
@@ -376,14 +418,12 @@ async function handler(req: Request): Promise<Response> {
             if (cachedResolvedUrl) {
                 finalResponse = await fetch(cachedResolvedUrl);
             } else {
-                // Manual redirect handling
                 const probeResp = await fetch(data.downloadUrl, { redirect: "manual" });
 
                 if (probeResp.status >= 300 && probeResp.status < 400) {
                     const location = probeResp.headers.get("location");
                     if (!location) return new Response("Redirect missing Location header", { status: 502 });
 
-                    // Update cache
                     await redis.setex(resolvedKey, 21600, location);
                     finalResponse = await fetch(location);
                 } else if (probeResp.status === 200) {
@@ -399,7 +439,6 @@ async function handler(req: Request): Promise<Response> {
                 return new Response(await finalResponse.text(), { status: finalResponse.status });
             }
 
-            // Create headers
             const headers = new Headers(finalResponse.headers);
             headers.set("Content-Disposition", `attachment; filename="${hash}.nzb"`);
 
@@ -409,7 +448,6 @@ async function handler(req: Request): Promise<Response> {
             }
 
             return new Response(finalResponse.body, { headers });
-
         } catch (err) {
             console.error("[NZB Proxy] Error:", err);
             return new Response("Internal NZB proxy error", { status: 500 });
@@ -431,11 +469,14 @@ if (missingKeys.length > 0) {
     Deno.serve({ port }, () => {
         return new Response(
             `[System Maintenance] Configuration required.\nMissing: ${validateConfig().join(", ")}\nUse the manage cli tool!`,
-            { status: 503 }
+            { status: 503 },
         );
     });
 } else {
     console.log("✅ %cConfiguration valid. Starting application...", "color: green");
-    console.log("Install url: ", `${Config.ADDON_BASE_URL.replace(/\/$/, "")}/${Config.ADDON_SHARED_SECRET}/manifest.json`);
+    console.log(
+        "Install url: ",
+        `${Config.ADDON_BASE_URL.replace(/\/$/, "")}/${Config.ADDON_SHARED_SECRET}/manifest.json`,
+    );
     Deno.serve({ port }, handler);
 }
