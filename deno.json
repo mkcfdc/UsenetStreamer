@@ -1,6 +1,6 @@
 {
   "tasks": {
-    "dev": "deno run --allow-env --allow-net --allow-read --env-file=.env main.ts",
+    "dev": "deno run --allow-env --allow-net --allow-read --allow-write --env-file=.env main.ts",
     "manage": "deno run --allow-all cli/manage.ts"
   },
   "imports": {

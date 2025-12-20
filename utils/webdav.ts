@@ -13,8 +13,7 @@ export type WebdavClient = {
     getDirectoryContents: (directory: string) => Promise<WebdavEntry[]>;
 };
 
-const AUTH_HEADER =
-    "Basic " + btoa(`${Config.NZBDAV_WEBDAV_USER}:${Config.NZBDAV_WEBDAV_PASS}`);
+const AUTH_HEADER = "Basic " + btoa(`${Config.NZBDAV_WEBDAV_USER}:${Config.NZBDAV_WEBDAV_PASS}`);
 
 const REMOTE_BASE = Config.NZBDAV_WEBDAV_URL.replace(/\/+$/, "");
 const ROOT_PATH = (Config.NZBDAV_WEBDAV_ROOT || "").replace(/(^\/+|\/+$)/g, "");
@@ -29,6 +28,16 @@ const PROPFIND_BODY = `<?xml version="1.0" encoding="utf-8" ?>
     <D:getcontenttype/>
   </D:prop>
 </D:propfind>`;
+
+// Reusable headers object - avoid recreating on every request
+const PROPFIND_HEADERS = {
+    "Authorization": AUTH_HEADER,
+    "Depth": "1",
+    "Content-Type": "application/xml",
+} as const;
+
+// Case-insensitive pattern for collection detection
+const COLLECTION_PATTERN = /<[dD]:collection\s*\/>/;
 
 let client: WebdavClient | null = null;
 
@@ -46,20 +55,102 @@ function safeDecodeURIComponent(s: string): string {
     }
 }
 
-async function readTextCapped(res: Response, max = 300): Promise<string> {
-    try {
-        const txt = await res.text();
-        return txt.length > max ? txt.slice(0, max) : txt;
-    } catch {
-        return "";
+function extractTagValue(xml: string, tagName: string): string | null {
+    // Matches both D: and d: prefixes
+    const pattern = new RegExp(`<[dD]:${tagName}>([^<]*)<`, "i");
+    const match = pattern.exec(xml);
+    return match?.[1] ?? null;
+}
+
+function parseSize(sizeStr: string | null): number | null {
+    if (!sizeStr) return null;
+    const n = parseInt(sizeStr, 10);
+    return Number.isFinite(n) ? n : null;
+}
+
+function extractNameFromHref(href: string): string {
+    const decodedHref = safeDecodeURIComponent(href);
+    const trimmed = decodedHref.endsWith("/")
+        ? decodedHref.slice(0, -1)
+        : decodedHref;
+    return trimmed.split("/").pop() || "";
+}
+
+function isSelfEntry(href: string, targetPathEncoded: string): boolean {
+    if (!targetPathEncoded) return false;
+
+    const hrefTrimmed = href.endsWith("/") ? href.slice(0, -1) : href;
+    if (!hrefTrimmed.endsWith(targetPathEncoded)) return false;
+
+    const sepIdx = hrefTrimmed.length - targetPathEncoded.length - 1;
+    return sepIdx < 0 || hrefTrimmed[sepIdx] === "/";
+}
+
+function parseResponseBlock(block: string, targetPathEncoded: string): WebdavEntry | null {
+    // Skip non-200 responses
+    if (!block.includes("200 OK") && !block.includes(" 200 ")) return null;
+
+    const href = extractTagValue(block, "href");
+    if (!href) return null;
+
+    // Skip self-referential entries
+    if (isSelfEntry(href, targetPathEncoded)) return null;
+
+    const isDirectory = COLLECTION_PATTERN.test(block);
+    const decodedHref = safeDecodeURIComponent(href);
+
+    return {
+        name: extractNameFromHref(href),
+        href: decodedHref,
+        isDirectory,
+        size: isDirectory ? null : parseSize(extractTagValue(block, "getcontentlength")),
+        type: extractTagValue(block, "getcontenttype"),
+        lastModified: extractTagValue(block, "getlastmodified"),
+    };
+}
+
+function parseWebdavXml(xml: string, targetPathEncoded: string): WebdavEntry[] {
+    const entries: WebdavEntry[] = [];
+    const xmlLen = xml.length;
+    let pos = 0;
+
+    while (pos < xmlLen) {
+        const startIdx = xml.indexOf("response>", pos);
+        if (startIdx === -1) break;
+
+        const openTag = xml.lastIndexOf("<", startIdx);
+        if (openTag === -1) {
+            pos = startIdx + 9;
+            continue;
+        }
+
+        const gt = xml.indexOf(">", openTag);
+        if (gt === -1) break;
+
+        const tagName = xml.substring(openTag + 1, gt).trim();
+        const closeTag = `</${tagName}>`;
+
+        const endIdx = xml.indexOf(closeTag, gt);
+        if (endIdx === -1) {
+            pos = gt + 1;
+            continue;
+        }
+
+        pos = endIdx + closeTag.length;
+
+        const block = xml.substring(openTag, endIdx);
+        const entry = parseResponseBlock(block, targetPathEncoded);
+        if (entry) entries.push(entry);
     }
+
+    return entries;
 }
 
 export function getWebdavClient(): WebdavClient {
     if (client) return client;
 
     client = {
-        getDirectoryContents: async (directory: string) => {
+        getDirectoryContents: async (directory: string): Promise<WebdavEntry[]> => {
             const cleanPath = directory.replace(/(^\/+|\/+$)/g, "");
             const url = cleanPath ? `${REMOTE_ROOT_URL}/${cleanPath}` : REMOTE_ROOT_URL;
 
@@ -70,121 +161,30 @@ export function getWebdavClient(): WebdavClient {
             const res = await fetch(url, {
                 method: "PROPFIND",
                 client: httpClient,
-                headers: {
-                    "Authorization": AUTH_HEADER,
-                    "Depth": "1",
-                    "Content-Type": "application/xml",
-                },
+                headers: PROPFIND_HEADERS,
                 body: PROPFIND_BODY,
             });
 
             if (res.status !== 207) {
-                const txt = await readTextCapped(res, 200);
+                // Read limited response body for error context
+                let errorDetail = "";
+                try {
+                    const text = await res.text();
+                    errorDetail = text.length > 200 ? text.slice(0, 200) : text;
+                } catch {
+                    // ignore read errors
+                }
                 throw new Error(
-                    `WebDAV PROPFIND failed: ${res.status} ${res.statusText} - ${txt}`,
+                    `WebDAV PROPFIND failed: ${res.status} ${res.statusText} - ${errorDetail}`,
                 );
             }
 
             const xml = await res.text();
-            const entries: WebdavEntry[] = [];
-            const xmlLen = xml.length;
-
-            let pos = 0;
-
-            while (pos < xmlLen) {
-                const startIdx = xml.indexOf("response>", pos);
-                if (startIdx === -1) break;
-
-                const openTag = xml.lastIndexOf("<", startIdx);
-                if (openTag === -1) {
-                    pos = startIdx + 9;
-                    continue;
-                }
-
-                const gt = xml.indexOf(">", openTag);
-                if (gt === -1) break;
-
-                const tagName = xml.substring(openTag + 1, gt).trim(); // d:response / D:response
-                const closeTag = `</${tagName}>`;
-
-                const endIdx = xml.indexOf(closeTag, gt);
-                if (endIdx === -1) {
-                    pos = gt + 1;
-                    continue;
-                }
-
-                pos = endIdx + closeTag.length;
-
-                const block = xml.substring(openTag, endIdx);
-
-                if (block.indexOf("200 OK") === -1 && block.indexOf(" 200 ") === -1) continue;
-
-                const href = extractValue(block, "href");
-                if (!href) continue;
-
-                const hrefTrimmed = href.endsWith("/") ? href.slice(0, -1) : href;
-
-                if (targetPathEncoded) {
-                    if (hrefTrimmed.endsWith(targetPathEncoded)) {
-                        const sepIdx = hrefTrimmed.length - targetPathEncoded.length - 1;
-                        if (sepIdx < 0 || hrefTrimmed[sepIdx] === "/") {
-                            continue;
-                        }
-                    }
-                } else {
-                    // Root listing: many servers include self entry; usually name becomes "" and is harmless.
-                    // We don’t try to aggressively filter here to avoid false positives.
-                }
-
-                const isDirectory = block.indexOf("collection/>") !== -1 ||
-                    block.indexOf("<D:collection/>") !== -1 ||
-                    block.indexOf("<d:collection/>") !== -1;
-
-                const decodedHref = safeDecodeURIComponent(href);
-
-                const name = (href.endsWith("/")
-                    ? decodedHref.substring(0, decodedHref.length - 1)
-                    : decodedHref).split("/").pop() || "";
-
-                let size: number | null = null;
-                if (!isDirectory) {
-                    const sizeStr = extractValue(block, "getcontentlength");
-                    if (sizeStr) {
-                        const n = parseInt(sizeStr, 10);
-                        size = Number.isFinite(n) ? n : null;
-                    }
-                }
-
-                const lastModified = extractValue(block, "getlastmodified");
-                const type = extractValue(block, "getcontenttype");
-
-                entries.push({
-                    name,
-                    href: decodedHref,
-                    isDirectory,
-                    size,
-                    type,
-                    lastModified,
-                });
-            }
-
-            return entries;
+            return parseWebdavXml(xml, targetPathEncoded);
         },
     };
 
     return client;
-}
-
-function extractValue(xml: string, tagName: string): string | null {
-    const search = tagName + ">";
-    const startIdx = xml.indexOf(search);
-    if (startIdx === -1) return null;
-
-    const valStart = startIdx + search.length;
-    const valEnd = xml.indexOf("<", valStart);
-    if (valEnd === -1) return null;
-
-    return xml.substring(valStart, valEnd);
 }
 
 export function normalizeNzbdavPath(path: string): string {
@@ -193,9 +193,8 @@ export function normalizeNzbdavPath(path: string): string {
     const normalized = path.replace(/\\/g, "/").replace(/\/+/g, "/");
     if (normalized === "/") return "/";
 
-    const start = (normalized.charCodeAt(0) === 47) ? 1 : 0;
-    let end = normalized.length;
-    if (normalized.charCodeAt(end - 1) === 47) end--;
+    const start = normalized[0] === "/" ? 1 : 0;
+    const end = normalized[normalized.length - 1] === "/" ? normalized.length - 1 : normalized.length;
 
     return "/" + normalized.substring(start, end);
 }

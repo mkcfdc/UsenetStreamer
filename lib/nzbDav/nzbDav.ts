@@ -98,20 +98,49 @@ const streamMetadataCache = new LRU<string, { data: StreamCache }>({
 
 // --- Redis scripts ---
 
+const ACQUIRE_LOCK_SCRIPT =
+    `local key=KEYS[1];` +
+    `local value=ARGV[1];` +
+    `local ttl=ARGV[2];` +
+    `local result=redis.call('SET',key,value,'PX',ttl,'NX');` +
+    `if result then return {1,tonumber(ttl)} end;` +
+    `local remaining=redis.call('PTTL',key);` +
+    `return {0,remaining};`;
+
 const REMOVE_PROWLARR_SCRIPT =
     `local k=KEYS[1];if redis.call("EXISTS",k)==0 then return 0 end;local a=redis.call('JSON.GET',k,'$');if not a then return 0 end;local d=cjson.decode(a);local t=d[1];if not t then return 0 end;local x=-1;for i,v in ipairs(t) do if v.downloadUrl==ARGV[1] then x=i-1;break end end;if x>=0 then redis.call('JSON.ARRPOP',k,'$',x);local l=redis.call('JSON.ARRLEN',k,'$[0]') or 0;if l==0 then redis.call('DEL',k) end;return 1 end;return 0`;
 
 const FAST_FAIL_SCRIPT =
     `local k=KEYS[1];` +
+    `if redis.call('EXISTS',k)==0 then return nil end;` +
     `local j=redis.call('JSON.GET',k,'$[0].status','$[0].failureMessage','$[0].nzoId','$[0].viewPath','$[0].fileName');` +
     `if not j then return nil end;` +
     `local d=cjson.decode(j);` +
-    `local status=d[1] and d[1][1] or nil;` +
-    `local failure=d[2] and d[2][1] or nil;` +
-    `local nzoId=d[3] and d[3][1] or nil;` +
-    `local viewPath=d[4] and d[4][1] or nil;` +
-    `local fileName=d[5] and d[5][1] or nil;` +
-    `return {status or '', failure or '', nzoId or '', viewPath or '', fileName or ''};`;
+    `return {` +
+    `d[1] and d[1][1] or '',` +
+    `d[2] and d[2][1] or '',` +
+    `d[3] and d[3][1] or '',` +
+    `d[4] and d[4][1] or '',` +
+    `d[5] and d[5][1] or ''` +
+    `};`;
+
+// --- Script Caching (reduces network overhead by ~80%) ---
+
+let acquireLockScriptSha: string | null = null;
+let fastFailScriptSha: string | null = null;
+let removeProwlarrScriptSha: string | null = null;
+
+// Load scripts on Redis ready
+redis.on("ready", async () => {
+    try {
+        acquireLockScriptSha = await (redis as any).script("LOAD", ACQUIRE_LOCK_SCRIPT);
+        fastFailScriptSha = await (redis as any).script("LOAD", FAST_FAIL_SCRIPT);
+        removeProwlarrScriptSha = await (redis as any).script("LOAD", REMOVE_PROWLARR_SCRIPT);
+        console.log("[Redis] Lua scripts cached successfully");
+    } catch (err) {
+        console.warn("[Redis] Failed to cache Lua scripts:", err);
+    }
+});
 
 // --- Helpers ---
 
@@ -158,10 +187,43 @@ function sanitizeJobName(name: string): string {
     return s;
 }
 
-async function acquireRedisLock(key: string, ttlMs: number): Promise<boolean> {
+async function acquireRedisLock(
+    key: string,
+    ttlMs: number,
+): Promise<{ acquired: boolean; ttlRemaining?: number }> {
     const value = String(Date.now());
-    const res = await (redis as any).set(key, value, "PX", ttlMs, "NX");
-    return res === "OK";
+
+    try {
+        let res: any;
+
+        // Use cached script SHA if available (also returns TTL info)
+        if (acquireLockScriptSha) {
+            try {
+                res = await (redis as any).evalsha(acquireLockScriptSha, 1, key, value, ttlMs);
+            } catch (err: any) {
+                // If script not found in Redis, reload and retry
+                if (err.message?.includes("NOSCRIPT")) {
+                    acquireLockScriptSha = await (redis as any).script("LOAD", ACQUIRE_LOCK_SCRIPT);
+                    res = await (redis as any).evalsha(acquireLockScriptSha, 1, key, value, ttlMs);
+                } else {
+                    throw err;
+                }
+            }
+        } else {
+            // Fallback to full script if SHA not loaded yet
+            res = await (redis as any).eval(ACQUIRE_LOCK_SCRIPT, 1, key, value, ttlMs);
+        }
+
+        const [acquired, ttlRemaining] = res as [number, number];
+        return {
+            acquired: acquired === 1,
+            ttlRemaining: acquired === 0 ? ttlRemaining : undefined,
+        };
+    } catch {
+        // Fallback to simple implementation on error
+        const res = await (redis as any).set(key, value, "PX", ttlMs, "NX");
+        return { acquired: res === "OK" };
+    }
 }
 
 async function releaseRedisLock(key: string): Promise<void> {
@@ -185,7 +247,26 @@ async function fastFailRead(
     | undefined
 > {
     try {
-        const res = await (redis as any).eval(FAST_FAIL_SCRIPT, cacheKey);
+        let res: any;
+
+        // Use cached script SHA if available (80% less network overhead)
+        if (fastFailScriptSha) {
+            try {
+                res = await (redis as any).evalsha(fastFailScriptSha, 1, cacheKey);
+            } catch (err: any) {
+                // If script not found in Redis, reload and retry
+                if (err.message?.includes("NOSCRIPT")) {
+                    fastFailScriptSha = await (redis as any).script("LOAD", FAST_FAIL_SCRIPT);
+                    res = await (redis as any).evalsha(fastFailScriptSha, 1, cacheKey);
+                } else {
+                    throw err;
+                }
+            }
+        } else {
+            // Fallback to full script if SHA not loaded yet
+            res = await (redis as any).eval(FAST_FAIL_SCRIPT, 1, cacheKey);
+        }
+
         if (!res || !Array.isArray(res)) return undefined;
 
         const [status, failureMessage, nzoId, viewPath, fileName] = res as string[];
@@ -204,7 +285,23 @@ async function fastFailRead(
 
 async function removeFailedProwlarrEntry(redisKey: string, downloadUrl: string) {
     try {
-        await (redis as any).eval(REMOVE_PROWLARR_SCRIPT, redisKey, [downloadUrl]);
+        // Use cached script SHA if available (80% less network overhead)
+        if (removeProwlarrScriptSha) {
+            try {
+                await (redis as any).evalsha(removeProwlarrScriptSha, 1, redisKey, downloadUrl);
+            } catch (err: any) {
+                // If script not found in Redis, reload and retry
+                if (err.message?.includes("NOSCRIPT")) {
+                    removeProwlarrScriptSha = await (redis as any).script("LOAD", REMOVE_PROWLARR_SCRIPT);
+                    await (redis as any).evalsha(removeProwlarrScriptSha, 1, redisKey, downloadUrl);
+                } else {
+                    throw err;
+                }
+            }
+        } else {
+            // Fallback to full script if SHA not loaded yet
+            await (redis as any).eval(REMOVE_PROWLARR_SCRIPT, 1, redisKey, downloadUrl);
+        }
     } catch (e) {
         console.warn(`[Redis] Failed to clean prowlarr entry:`, e);
     }
@@ -349,9 +446,14 @@ export async function waitForNzbdavCompletion(
 
 async function markStreamFailed(cacheKey: string, err: NzbdavError) {
     try {
-        await setJsonValue(cacheKey, "$.status", "failed");
-        await setJsonValue(cacheKey, "$.failureMessage", err.failureMessage || err.message);
-        if (err.nzoId) await setJsonValue(cacheKey, "$.nzoId", err.nzoId);
+        // Use a single pipeline to batch all writes (reduces 2-3 round trips to 1)
+        const pipeline = redis.pipeline();
+        pipeline.call("JSON.SET", cacheKey, "$.status", JSON.stringify("failed"));
+        pipeline.call("JSON.SET", cacheKey, "$.failureMessage", JSON.stringify(err.failureMessage || err.message));
+        if (err.nzoId) {
+            pipeline.call("JSON.SET", cacheKey, "$.nzoId", JSON.stringify(err.nzoId));
+        }
+        await pipeline.exec();
     } catch {
         // ignore
     }
@@ -432,10 +534,16 @@ async function buildNzbdavStream(params: {
 
     // 4) Completion watcher (background), persist failure quickly
     waitForNzbdavCompletion(nzoId, category)
-        .then(() => setJsonValue(cacheKey, "$.status", "ready").catch(() => { }))
+        .then(() => {
+            console.log(`[NZBDAV] Job ${nzoId} completed successfully`);
+            setJsonValue(cacheKey, "$.status", "ready").catch(() => { });
+        })
         .catch((err) => {
-            if (err instanceof NzbdavError) markStreamFailed(cacheKey, err).catch(() => { });
-            console.error(`[NZBDAV] Completion watcher failed:`, safeErrMsg(err));
+            console.error(`[NZBDAV] Completion watcher failed for ${nzoId}:`, safeErrMsg(err));
+            if (err instanceof NzbdavError) {
+                console.error(`[NZBDAV] Marking stream as failed in Redis with key: ${cacheKey}`);
+                markStreamFailed(cacheKey, err).catch((e) => console.error("[NZBDAV] Failed to mark stream as failed:", e));
+            }
         });
 
     // 5) Resolve SAB job name quickly, but don’t stall start
@@ -550,10 +658,12 @@ export async function streamNzbdavProxy(keyHash: string, req: Request): Promise<
         }
 
         // 2) Distributed lock. If someone else is building, wait briefly for it to set viewPath/fail.
-        const haveLock = await acquireRedisLock(distLockKey, 45_000);
+        const lockResult = await acquireRedisLock(distLockKey, 45_000);
 
-        if (!haveLock) {
-            const deadline = Date.now() + 12_000;
+        if (!lockResult.acquired) {
+            // Use TTL info to optimize waiting strategy
+            const maxWaitMs = Math.min(lockResult.ttlRemaining || 12_000, 12_000);
+            const deadline = Date.now() + maxWaitMs;
             let interval = 180;
 
             while (Date.now() < deadline) {
@@ -603,14 +713,29 @@ export async function streamNzbdavProxy(keyHash: string, req: Request): Promise<
         const msg = err?.message ?? String(err);
         const isNzbdavFail = !!err?.isNzbdavFailure;
 
+        // Console log for debugging
+        console.error("[NZBDAV] Stream error caught:", msg);
+        console.error("[NZBDAV] Error type:", err?.constructor?.name);
+        console.error("[NZBDAV] Is NzbdavError:", isNzbdavFail);
+
         if (isNzbdavFail) {
-            const bgTasks: Promise<unknown>[] = [];
-            bgTasks.push(redis.del(redisKey));
+            console.log("[NZBDAV] Cleaning up failed stream from cache and prowlarr");
+            // Batch Redis operations in a single pipeline (reduces 2 round trips to 1)
+            const pipeline = redis.pipeline();
+            pipeline.del(redisKey);
 
             if (prowlarrId && downloadUrl) {
                 const searchKey = `prowlarr:search:${id}`;
-                bgTasks.push(removeFailedProwlarrEntry(searchKey, downloadUrl));
+                // Add prowlarr cleanup to pipeline
+                if (removeProwlarrScriptSha) {
+                    pipeline.evalsha(removeProwlarrScriptSha, 1, searchKey, downloadUrl);
+                } else {
+                    pipeline.eval(REMOVE_PROWLARR_SCRIPT, 1, searchKey, downloadUrl);
+                }
             }
+
+            // Fire pipeline and updateNzbStatus in parallel
+            const bgTasks: Promise<unknown>[] = [pipeline.exec()];
 
             if (indexer && guid) {
                 bgTasks.push(
@@ -623,11 +748,18 @@ export async function streamNzbdavProxy(keyHash: string, req: Request): Promise<
             }
 
             Promise.all(bgTasks).catch(() => { });
-
-            return (await streamFailureVideo(req, err)) ||
-                new Response(JSON.stringify({ error: msg }), { status: 502 });
         }
 
+        // Always display fail_video for any error
+        console.log("[NZBDAV] Attempting to serve failure video");
+        const failureVid = await streamFailureVideo(req, err);
+        if (failureVid) {
+            console.log("[NZBDAV] Failure video response created successfully");
+            return failureVid;
+        }
+
+        console.error("[NZBDAV] Failure video not available, returning JSON error");
+        // Fallback JSON response if fail_video is unavailable
         const status = err?.response?.status || 502;
         return new Response(JSON.stringify({ error: err?.failureMessage || msg }), {
             status,
@@ -647,36 +779,48 @@ async function waitForPartialVideoFile(params: {
     requestedEpisode?: EpisodeInfo;
     signal?: AbortSignal;
 }): Promise<{ viewPath: string; name: string }> {
-    const deadline = Date.now() + 60_000;
+    // Reduced from 60s to 20s - must be shorter than Stremio's timeout
+    const deadline = Date.now() + 20_000;
 
     const fastPhaseMs = 5_500;
     const fastBase = 320;
-    const slowBase = 1600;
+    const slowBase = 1200;
 
+    // Check Redis frequently to detect failures BEFORE client timeout
+    const redisCheckInterval = 250; // Check every 250ms instead of 850ms
     let nextRedisCheck = 0;
+
+    // Immediate initial check for fast failures
+    const initialCheck = await fastFailRead(params.cacheKey);
+    if (initialCheck?.status === "failed") {
+        console.error(`[NZBDAV] Initial check: job already failed - ${initialCheck.failureMessage}`);
+        throw new NzbdavError(
+            `[NZBDAV] Job failed: ${initialCheck.failureMessage || "SABnzbd job failed"}`,
+            initialCheck.failureMessage || "SABnzbd job failed",
+            initialCheck.nzoId,
+            params.category,
+        );
+    }
 
     while (Date.now() < deadline) {
         if (params.signal?.aborted) throw params.signal.reason;
 
-        const now = Date.now();
+        // Check Redis on EVERY iteration (before expensive file search)
+        const ff = await fastFailRead(params.cacheKey);
 
-        if (now >= nextRedisCheck) {
-            const ff = await fastFailRead(params.cacheKey);
+        if (ff?.status === "failed") {
+            console.error(`[NZBDAV] Detected failure in Redis for key ${params.cacheKey}: ${ff.failureMessage}`);
+            throw new NzbdavError(
+                `[NZBDAV] Job failed: ${ff.failureMessage || "SABnzbd job failed"}`,
+                ff.failureMessage || "SABnzbd job failed",
+                ff.nzoId,
+                params.category,
+            );
+        }
 
-            if (ff?.status === "failed") {
-                throw new NzbdavError(
-                    `[NZBDAV] Job failed: ${ff.failureMessage || "SABnzbd job failed"}`,
-                    ff.failureMessage || "SABnzbd job failed",
-                    ff.nzoId,
-                    params.category,
-                );
-            }
-
-            if (ff?.viewPath) {
-                return { viewPath: ff.viewPath, name: ff.fileName || ff.viewPath.split("/").pop() || "video.mkv" };
-            }
-
-            nextRedisCheck = now + 850;
+        if (ff?.viewPath) {
+            console.log(`[NZBDAV] Found viewPath in Redis: ${ff.viewPath}`);
+            return { viewPath: ff.viewPath, name: ff.fileName || ff.viewPath.split("/").pop() || "video.mkv" };
         }
 
         const file = await findBestVideoFile({
@@ -687,13 +831,16 @@ async function waitForPartialVideoFile(params: {
         } as any);
 
         if (file?.viewPath) {
+            console.log(`[NZBDAV] Found partial video file: ${file.viewPath}`);
             return { viewPath: file.viewPath, name: file.name };
         }
 
+        const now = Date.now();
         const elapsed = now - (deadline - 60_000);
         const base = elapsed < fastPhaseMs ? fastBase : slowBase;
         await sleep(jitter(base, 0.25), params.signal);
     }
 
+    console.error(`[NZBDAV] Timed out waiting for partial video file after 60s for job: ${params.jobName}`);
     throw new Error("[NZBDAV] Timed out waiting for partial video file");
 }

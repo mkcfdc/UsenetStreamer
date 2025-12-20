@@ -4,6 +4,22 @@ import { extname } from "@std/path";
 const RANGE_REGEX = /^bytes=\s*(\d*)\s*-\s*(\d*)\s*$/;
 const DEFAULT_MIME = "video/mp4";
 
+// Errors that indicate client disconnection - not worth logging
+const IGNORED_ERROR_PATTERNS = ["Broken pipe", "aborted", "Connection reset", "resource closed"];
+
+function isIgnorableError(err: unknown): boolean {
+    const msg = err instanceof Error ? err.message : String(err);
+    return IGNORED_ERROR_PATTERNS.some((pattern) => msg.includes(pattern));
+}
+
+function safeClose(file: Deno.FsFile | undefined): void {
+    try {
+        file?.close();
+    } catch {
+        // ignore - already closed or invalid
+    }
+}
+
 export async function streamFileResponse(
     req: Request,
     path: string,
@@ -30,30 +46,27 @@ export async function streamFileResponse(
 
     const mtime = stat.mtime;
 
-    const headers = new Headers();
+    const headers = new Headers(initialHeaders);
     headers.set("Accept-Ranges", "bytes");
-    headers.set("Content-Type", contentType(extname(path)) || DEFAULT_MIME);
+    headers.set("Content-Type", contentType(extname(path)) ?? DEFAULT_MIME);
 
-    if (initialHeaders) {
-        for (const [k, v] of initialHeaders.entries()) headers.set(k, v);
-    }
-
-    let lastModifiedStr: string | null = null;
     let etag: string | null = null;
+    let lastModifiedStr: string | null = null;
 
     if (mtime) {
         lastModifiedStr = mtime.toUTCString();
-        headers.set("Last-Modified", lastModifiedStr);
         etag = `W/"${size.toString(16)}-${mtime.getTime().toString(16)}"`;
+        headers.set("Last-Modified", lastModifiedStr);
         headers.set("ETag", etag);
     }
 
+    // Conditional request handling
     const ifNoneMatch = req.headers.get("If-None-Match");
     const ifModifiedSince = req.headers.get("If-Modified-Since");
 
     if (
-        (etag && ifNoneMatch && ifNoneMatch === etag) ||
-        (lastModifiedStr && ifModifiedSince && ifModifiedSince === lastModifiedStr)
+        (etag && ifNoneMatch === etag) ||
+        (lastModifiedStr && ifModifiedSince === lastModifiedStr)
     ) {
         return new Response(null, { status: 304, headers });
     }
@@ -63,7 +76,7 @@ export async function streamFileResponse(
         return new Response(null, { status: 200, headers });
     }
 
-    let code = 200;
+    let status = 200;
     let start = 0;
     let end = size - 1;
 
@@ -71,16 +84,12 @@ export async function streamFileResponse(
     if (rangeHeader) {
         const match = RANGE_REGEX.exec(rangeHeader);
         if (match) {
-            const startStr = match[1];
-            const endStr = match[2];
+            const [, startStr, endStr] = match;
 
             if (startStr && !endStr) {
                 start = Number(startStr);
-                end = size - 1;
             } else if (!startStr && endStr) {
-                const suffix = Number(endStr);
-                start = Math.max(0, size - suffix);
-                end = size - 1;
+                start = Math.max(0, size - Number(endStr));
             } else if (startStr && endStr) {
                 start = Number(startStr);
                 end = Number(endStr);
@@ -91,7 +100,7 @@ export async function streamFileResponse(
                 return new Response(null, { status: 416, headers });
             }
 
-            code = 206;
+            status = 206;
             headers.set("Content-Range", `bytes ${start}-${end}/${size}`);
         }
     }
@@ -99,8 +108,8 @@ export async function streamFileResponse(
     const contentLength = end - start + 1;
     headers.set("Content-Length", String(contentLength));
 
-    if (code === 206) {
-        console.log(`[${logPrefix}] ${code} ${start}-${end}/${size} -> ${path}`);
+    if (status === 206) {
+        console.log(`[${logPrefix}] ${status} ${start}-${end}/${size} -> ${path}`);
     }
 
     let file: Deno.FsFile | undefined;
@@ -112,21 +121,13 @@ export async function streamFileResponse(
             await file.seek(start, Deno.SeekMode.Start);
         }
 
-        // Fast path: stream "rest of file" without extra transforms.
+        // Fast path: stream rest of file without transforms
         if (end === size - 1) {
-            const body = file.readable;
-            req.signal?.addEventListener?.("abort", () => {
-                try {
-                    file?.close();
-                } catch {
-                    // ignore
-                }
-            }, { once: true });
-
-            return new Response(body, { status: code, headers });
+            req.signal?.addEventListener("abort", () => safeClose(file), { once: true });
+            return new Response(file.readable, { status, headers });
         }
 
-        // Partial-range path: limit bytes via TransformStream and ensure close on all paths.
+        // Partial-range path: limit bytes via TransformStream
         let bytesSent = 0;
 
         const limiter = new TransformStream<Uint8Array, Uint8Array>({
@@ -140,45 +141,27 @@ export async function streamFileResponse(
                 if (chunk.byteLength <= remaining) {
                     controller.enqueue(chunk);
                     bytesSent += chunk.byteLength;
-                    return;
+                } else {
+                    controller.enqueue(chunk.subarray(0, remaining));
+                    bytesSent += remaining;
+                    controller.terminate();
                 }
-
-                controller.enqueue(chunk.subarray(0, remaining));
-                bytesSent += remaining;
-                controller.terminate();
             },
             flush() {
-                try {
-                    file?.close();
-                } catch {
-                    // ignore
-                }
+                safeClose(file);
             },
         });
 
-        req.signal?.addEventListener?.("abort", () => {
-            try {
-                file?.close();
-            } catch {
-                // ignore
-            }
-            try {
-                limiter.writable.abort();
-            } catch {
-                // ignore
-            }
+        req.signal?.addEventListener("abort", () => {
+            safeClose(file);
+            limiter.writable.abort().catch(() => { });
         }, { once: true });
 
-        return new Response(file.readable.pipeThrough(limiter), { status: code, headers });
+        return new Response(file.readable.pipeThrough(limiter), { status, headers });
     } catch (err) {
-        try {
-            file?.close();
-        } catch {
-            // ignore
-        }
+        safeClose(file);
 
-        const msg = err instanceof Error ? err.message : String(err);
-        if (!msg.includes("Broken pipe") && !msg.includes("aborted") && !msg.includes("Connection reset")) {
+        if (!isIgnorableError(err)) {
             console.error(`[${logPrefix}] Error:`, err);
         }
         return null;
