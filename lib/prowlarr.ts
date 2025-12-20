@@ -1,24 +1,21 @@
 import { Config } from "../env.ts";
 import { fetcher } from "../utils/fetcher.ts";
 
-interface ProwlarrSearchOptions {
+// --- Types ---
+
+export interface ProwlarrSearchOptions {
     imdbId?: string;
     tvdbId?: string;
     tmdbId?: string;
     name?: string;
     year?: string;
     limit?: number;
-    type?: 'movie' | 'series';
+    type?: "movie" | "series";
     season?: number;
     episode?: number;
 }
 
-interface SearchPlan {
-    type: 'search' | 'movie' | 'tvsearch';
-    query: string;
-}
-
-interface ProwlarrResult {
+export interface ProwlarrResult {
     guid: string | null;
     title: string;
     size: number;
@@ -33,162 +30,233 @@ interface ProwlarrResult {
     fileName: string;
 }
 
+interface SearchPlan {
+    type: "search" | "movie" | "tvsearch";
+    query: string;
+}
+
+// --- Constants ---
+
+const PROWLARR_URL = Config.PROWLARR_URL;
+const PROWLARR_API_KEY = Config.PROWLARR_API_KEY;
+
+// Pre-compiled regex patterns
+const NORMALIZE_BRACKETS = /[\[\](){}]/g;
+const NORMALIZE_NON_ALNUM = /[^a-z0-9]+/g;
+const NORMALIZE_KEYWORDS = /\b(repack|proper|internal|multi|dual|hdr|dv|atmos|subs|webrip|webdl|web-dl|bluray|uhd|remux|hevc|h265|x265|x264|avc|h264|10bit|2160p|1080p|720p|480p|576p|hdr10|dolby|vision)\b/g;
+const NORMALIZE_SPACES = /\s+/g;
+const STRIP_NON_ALNUM = /[^a-z0-9]/g;
+
+// Episode pattern cache
+const episodePatternCache = new Map<string, RegExp>();
+
 // --- Helpers ---
 
-const isUsenetProtocol = (result: ProwlarrResult): boolean => {
+function isUsenetProtocol(result: ProwlarrResult): boolean {
     if (result.protocol?.toLowerCase() !== "usenet") return false;
 
-    // Double check against magnet/torrent artifacts just in case
-    const guid = (result.guid || "").toLowerCase();
-    const downloadUrl = (result.downloadUrl || "").toLowerCase();
-    if (guid.startsWith("magnet:") || downloadUrl.startsWith("magnet:") ||
-        guid.endsWith(".torrent") || downloadUrl.endsWith(".torrent")) {
-        return false;
-    }
-    return true;
-};
+    const guid = result.guid?.toLowerCase() ?? "";
+    const url = result.downloadUrl?.toLowerCase() ?? "";
 
-const normalizeTitle = (title: string): string => {
+    // Quick rejection for torrents
+    return !(
+        guid.startsWith("magnet:") ||
+        url.startsWith("magnet:") ||
+        guid.endsWith(".torrent") ||
+        url.endsWith(".torrent")
+    );
+}
+
+function normalizeTitle(title: string): string {
     return title
         .toLowerCase()
-        .replace(/[\[\](){}]/g, '') // Remove brackets
-        .replace(/[^a-z0-9]+/g, ' ') // Non-alphanumeric to space
-        .replace(/\b(repack|proper|internal|multi|dual|hdr|dv|atmos|subs|webrip|webdl|web-dl|bluray|uhd|remux|hevc|h265|x265|x264|avc|h264|10bit|2160p|1080p|720p|480p|576p|hdr10|dolby|vision)\b/g, '')
-        .replace(/\s+/g, ' ')
+        .replace(NORMALIZE_BRACKETS, "")
+        .replace(NORMALIZE_NON_ALNUM, " ")
+        .replace(NORMALIZE_KEYWORDS, "")
+        .replace(NORMALIZE_SPACES, " ")
         .trim();
-};
+}
 
-const fileMatchesEpisode = (fileName: string, season: number, episode: number): boolean => {
-    // We construct a single Regex with "OR" operators (|)
-    // 1. s0*S\.?e0*E   -> Matches S01E01, S1E1, S01.E01 (Handles the dot automatically)
-    // 2. 0*Sx0*E       -> Matches 1x01, 01x01
-    // 3. ep...         -> Matches Ep 01, Episode 01
+function getEpisodePattern(season: number, episode: number): RegExp {
+    const key = `${season}:${episode}`;
+    let pattern = episodePatternCache.get(key);
 
-    const regex = new RegExp(
-        `(?:s0*${season}\\.?e0*${episode}|0*${season}x0*${episode}|(?:episode|ep)\\.?\\s*0*${episode})(?![0-9])`,
-        "i"
-    );
+    if (!pattern) {
+        pattern = new RegExp(
+            `(?:s0*${season}\\.?e0*${episode}|0*${season}x0*${episode}|(?:episode|ep)\\.?\\s*0*${episode})(?![0-9])`,
+            "i"
+        );
+        // Limit cache size
+        if (episodePatternCache.size > 100) {
+            const firstKey = episodePatternCache.keys().next().value;
+            if (firstKey) episodePatternCache.delete(firstKey);
+        }
+        episodePatternCache.set(key, pattern);
+    }
 
-    return regex.test(fileName);
-};
+    return pattern;
+}
 
-const titleContainsName = (title: string, name: string): boolean => {
-    const normalizedName = name.toLowerCase().replace(/[^a-z0-9]/g, '');
-    const normalizedTitle = title.toLowerCase().replace(/[^a-z0-9]/g, '');
+function fileMatchesEpisode(fileName: string, season: number, episode: number): boolean {
+    return getEpisodePattern(season, episode).test(fileName);
+}
+
+function titleContainsName(title: string, name: string): boolean {
+    const normalizedName = name.toLowerCase().replace(STRIP_NON_ALNUM, "");
+    const normalizedTitle = title.toLowerCase().replace(STRIP_NON_ALNUM, "");
     return normalizedTitle.includes(normalizedName);
-};
+}
 
-// --- Main Logic ---
+function formatEpisode(season: number, episode: number): string {
+    return `S${String(season).padStart(2, "0")}E${String(episode).padStart(2, "0")}`;
+}
+
+// --- Search Execution ---
+
+async function executeSearch(
+    plan: SearchPlan,
+    baseParams: Record<string, string>,
+): Promise<ProwlarrResult[]> {
+    const params = new URLSearchParams({
+        ...baseParams,
+        type: plan.type,
+        query: plan.query,
+    });
+
+    const url = `${PROWLARR_URL}/api/v1/search?${params}`;
+
+    try {
+        const data = await fetcher<ProwlarrResult[]>(url, { timeoutMs: 15000 });
+        return Array.isArray(data) ? data : [];
+    } catch (err) {
+        console.error(`[Prowlarr] ${plan.type}/${plan.query}: ${err instanceof Error ? err.message : err}`);
+        return [];
+    }
+}
+
+// --- Main Export ---
 
 export async function searchProwlarr(opts: ProwlarrSearchOptions): Promise<ProwlarrResult[]> {
-    // 1. Build Search Plans
-    const plans = new Map<string, SearchPlan>();
-    const defaultType = opts.type === "series" ? "tvsearch" : opts.type === "movie" ? "movie" : "search";
+    if (!PROWLARR_URL || !PROWLARR_API_KEY) {
+        console.warn("[Prowlarr] Not configured");
+        return [];
+    }
 
-    const addPlan = (type: SearchPlan['type'], query: string) => {
-        if (query && !plans.has(`${type}|${query}`)) {
-            plans.set(`${type}|${query}`, { type, query });
+    // 1. Build Search Plans
+    const plans: SearchPlan[] = [];
+    const planKeys = new Set<string>();
+
+    const addPlan = (type: SearchPlan["type"], query: string): void => {
+        const key = `${type}|${query}`;
+        if (query && !planKeys.has(key)) {
+            planKeys.add(key);
+            plans.push({ type, query });
         }
     };
 
-    // ID-based plans
-    if (opts.imdbId) addPlan(defaultType, `{ImdbId:${opts.imdbId}}`);
-    if (opts.type === "series" && opts.tvdbId) addPlan("tvsearch", `{TvdbId:${opts.tvdbId}}`);
-    if (opts.type === "movie" && opts.tmdbId) addPlan("movie", `{TmdbId:${opts.tmdbId}}`);
+    const defaultType = opts.type === "series" ? "tvsearch"
+        : opts.type === "movie" ? "movie"
+            : "search";
+
+    // ID-based plans (most specific)
+    if (opts.imdbId) {
+        addPlan(defaultType, `{ImdbId:${opts.imdbId}}`);
+    }
+    if (opts.type === "series" && opts.tvdbId) {
+        addPlan("tvsearch", `{TvdbId:${opts.tvdbId}}`);
+    }
+    if (opts.type === "movie" && opts.tmdbId) {
+        addPlan("movie", `{TmdbId:${opts.tmdbId}}`);
+    }
 
     // Text fallback
-    const textParts: string[] = [];
-    if (opts.name) textParts.push(opts.name);
-    if (opts.type === "movie" && opts.year) {
-        textParts.push(`(${opts.year})`);
-    } else if (opts.type === "series" && opts.season && opts.episode) {
-        textParts.push(`S${String(opts.season).padStart(2, "0")}E${String(opts.episode).padStart(2, "0")}`);
+    if (opts.name) {
+        let textQuery = opts.name;
+        if (opts.type === "movie" && opts.year) {
+            textQuery += ` (${opts.year})`;
+        } else if (opts.type === "series" && opts.season && opts.episode) {
+            textQuery += ` ${formatEpisode(opts.season, opts.episode)}`;
+        }
+        addPlan("search", textQuery);
     }
 
-    const textQuery = textParts.join(" ").trim();
-    if (textQuery) addPlan("search", textQuery);
+    if (plans.length === 0) {
+        console.warn("[Prowlarr] No search criteria provided");
+        return [];
+    }
 
-    // Fallback: if no specific ID plans exist but we have IMDB, ensure it's added
-    if (plans.size === 0 && opts.imdbId) addPlan(defaultType, `{ImdbId:${opts.imdbId}}`);
+    // 2. Base params (shared across all plans)
+    const baseParams: Record<string, string> = {
+        apikey: PROWLARR_API_KEY,
+        limit: String(opts.limit ?? 25),
+        offset: "0",
+        indexerIds: "-1",
+        protocol: "usenet",
+        categories: opts.type === "series" ? "5000" : "2000",
+    };
 
-    // 2. Prepare Execution Params
-    const categoryId = (opts.type === "series" || (opts.season && opts.episode)) ? "5000" : "2000";
-    const limit = String(opts.limit ?? 25);
+    if (opts.season) baseParams.season = String(opts.season);
+    if (opts.episode) baseParams.ep = String(opts.episode);
 
-    const uniquePlans = Array.from(plans.values());
+    // 3. Execute in parallel
+    const results = await Promise.all(
+        plans.map(plan => executeSearch(plan, baseParams))
+    );
 
-    // 3. Execute Searches in Parallel
-    const searchPromises = uniquePlans.map(async (plan) => {
-        const params = new URLSearchParams({
-            apikey: Config.PROWLARR_API_KEY!,
-            limit,
-            offset: "0",
-            indexerIds: "-1",
-            type: plan.type,
-            query: plan.query,
-            protocol: "usenet", // We only want Usenet
-            categories: categoryId,
-            ...(opts.season && { season: String(opts.season) }),
-            ...(opts.episode && { ep: String(opts.episode) }),
-        });
+    // 4. Flatten with pre-allocation
+    const totalCount = results.reduce((sum, arr) => sum + arr.length, 0);
+    if (totalCount === 0) {
+        console.log("[Prowlarr] No results found");
+        return [];
+    }
 
-        const url = `${Config.PROWLARR_URL}/api/v1/search?${params.toString()}`;
-        console.log(`[Prowlarr] Fetching: ${plan.type} -> ${plan.query}`);
-
-        try {
-            const data = await fetcher<ProwlarrResult[]>(url);
-            return Array.isArray(data) ? data : [];
-        } catch (error: any) {
-            console.error(`[Prowlarr] Plan failed (${plan.query}):`, error.message);
-            return [];
-        }
-    });
-
-    const rawResultsGrouped = await Promise.all(searchPromises);
-    const flatResults = rawResultsGrouped.flat();
-
-    // 4. Filter & Deduplicate
+    // 5. Filter & Deduplicate in single pass
     const bestResults = new Map<string, ProwlarrResult>();
+    const needsEpisodeCheck = opts.season !== undefined && opts.episode !== undefined;
+    const needsNameCheck = opts.name !== undefined;
 
-    for (const result of flatResults) {
-        // Basic Integrity Check
-        if (!result || !result.downloadUrl || !result.title) continue;
+    for (const group of results) {
+        for (const result of group) {
+            // Skip invalid
+            if (!result?.downloadUrl || !result.title) continue;
 
-        // Protocol Check
-        if (!isUsenetProtocol(result)) continue;
+            // Protocol check
+            if (!isUsenetProtocol(result)) continue;
 
-        // Strict Series Matching
-        if (opts.season && opts.episode) {
-            if (!fileMatchesEpisode(result.title, opts.season, opts.episode)) {
-                console.debug(`[Prowlarr] Skipped (S${opts.season}E${opts.episode} mismatch): ${result.title}`);
+            // Episode check
+            if (needsEpisodeCheck && !fileMatchesEpisode(result.title, opts.season!, opts.episode!)) {
                 continue;
             }
-        }
 
-        // Strict Name Matching
-        if (opts.name && !titleContainsName(result.title, opts.name)) {
-            console.debug(`[Prowlarr] Skipped (Name mismatch): ${result.title}`);
-            continue;
-        }
+            // Name check
+            if (needsNameCheck && !titleContainsName(result.title, opts.name!)) {
+                continue;
+            }
 
-        // Deduplication: Keep largest file for same normalized title
-        const key = normalizeTitle(result.title);
-        const existing = bestResults.get(key);
+            // Dedupe: keep largest
+            const key = normalizeTitle(result.title);
+            const existing = bestResults.get(key);
 
-        if (!existing || result.size > existing.size) {
-            bestResults.set(key, result);
+            if (!existing || result.size > existing.size) {
+                bestResults.set(key, result);
+            }
         }
     }
 
+    // 6. Convert to array and sort
     const finalResults = Array.from(bestResults.values());
 
-    // 5. Sort (GUID presence preference)
+    // Sort by: has GUID first, then by size descending
     finalResults.sort((a, b) => {
-        if (a.guid && !b.guid) return -1;
-        if (!a.guid && b.guid) return 1;
-        return 0; // Keep existing order otherwise
+        // GUID presence
+        const aHasGuid = a.guid ? 1 : 0;
+        const bHasGuid = b.guid ? 1 : 0;
+        if (aHasGuid !== bHasGuid) return bHasGuid - aHasGuid;
+
+        // Size (larger first)
+        return b.size - a.size;
     });
 
-    console.log(`[Prowlarr] Found ${finalResults.length} unique results.`);
+    console.log(`[Prowlarr] ${finalResults.length} unique results from ${plans.length} queries`);
     return finalResults;
 }

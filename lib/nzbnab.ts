@@ -1,7 +1,4 @@
-// search.ts
 import { getEnabledIndexers, type Indexer } from "../utils/sqlite.ts";
-
-// --- Types ---
 
 export interface SearchOptions {
     imdbId?: string;
@@ -24,19 +21,16 @@ export interface NzbResult {
     publishDate: string;
 }
 
-// Loose interface for the raw API response
-// Indexers auto-converting XML to JSON often produce nested structures
 interface RawNewznabItem {
     title: string;
-    guid: string | { text: string };
+    guid: string | { text?: string; "#text"?: string };
     link: string;
     pubDate: string;
     enclosure?: {
-        "@attributes"?: { length: string };
-        length?: string;
+        "@attributes"?: { length?: string };
+        length?: string | number;
     };
-    size?: number | string; // Some custom implementations
-    attr?: Array<{ "@attributes": { name: string; value: string } }>;
+    size?: number | string;
 }
 
 interface RawNewznabResponse {
@@ -45,171 +39,274 @@ interface RawNewznabResponse {
     };
 }
 
+const MS_PER_DAY = 86400000; // 1000 * 60 * 60 * 24
+const MOVIE_CATEGORIES = "2000,2030,2040";
+const TV_CATEGORIES = "5000,5030,5040";
+
+// Pre-compiled regex for performance
+const NORMALIZE_BRACKETS = /[\[\](){}]/g;
+const NORMALIZE_NON_ALNUM = /[^a-z0-9]+/g;
+const NORMALIZE_KEYWORDS = /\b(repack|proper|internal|multi|dual|hdr|dv|atmos|subs|webrip|webdl|web-dl|bluray|uhd|remux|hevc|h265|x265|x264|avc|h264|10bit|2160p|1080p|720p|480p|576p|hdr10|dolby|vision)\b/g;
+const NORMALIZE_SPACES = /\s+/g;
+const STRIP_NON_ALNUM = /[^a-z0-9]/g;
+
+const episodePatternCache = new Map<string, RegExp>();
+
 // --- Helpers ---
 
-const normalizeTitle = (title: string): string => {
+function normalizeTitle(title: string): string {
     return title
         .toLowerCase()
-        .replace(/[\[\](){}]/g, "")
-        .replace(/[^a-z0-9]+/g, " ")
-        .replace(/\b(repack|proper|internal|multi|dual|hdr|dv|atmos|subs|webrip|webdl|web-dl|bluray|uhd|remux|hevc|h265|x265|x264|avc|h264|10bit|2160p|1080p|720p|480p|576p|hdr10|dolby|vision)\b/g, "")
-        .replace(/\s+/g, " ")
+        .replace(NORMALIZE_BRACKETS, "")
+        .replace(NORMALIZE_NON_ALNUM, " ")
+        .replace(NORMALIZE_KEYWORDS, "")
+        .replace(NORMALIZE_SPACES, " ")
         .trim();
-};
+}
 
-const fileMatchesEpisode = (fileName: string, season: number, episode: number): boolean => {
-    const regex = new RegExp(`(?:s0*${season}\\.?e0*${episode}|0*${season}x0*${episode})(?![0-9])`, "i");
-    return regex.test(fileName);
-};
+function getEpisodePattern(season: number, episode: number): RegExp {
+    const key = `${season}:${episode}`;
+    let pattern = episodePatternCache.get(key);
 
-const titleContainsName = (title: string, name: string): boolean => {
-    const normalizedName = name.toLowerCase().replace(/[^a-z0-9]/g, "");
-    const normalizedTitle = title.toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (!pattern) {
+        pattern = new RegExp(
+            `(?:s0*${season}\\.?e0*${episode}|0*${season}x0*${episode})(?![0-9])`,
+            "i"
+        );
+        // Limit cache size
+        if (episodePatternCache.size > 100) {
+            const firstKey = episodePatternCache.keys().next().value;
+            if (firstKey) episodePatternCache.delete(firstKey);
+        }
+        episodePatternCache.set(key, pattern);
+    }
+
+    return pattern;
+}
+
+function fileMatchesEpisode(fileName: string, season: number, episode: number): boolean {
+    return getEpisodePattern(season, episode).test(fileName);
+}
+
+function titleContainsName(title: string, name: string): boolean {
+    const normalizedName = name.toLowerCase().replace(STRIP_NON_ALNUM, "");
+    const normalizedTitle = title.toLowerCase().replace(STRIP_NON_ALNUM, "");
     return normalizedTitle.includes(normalizedName);
-};
+}
 
-// Helper to find size in messy JSON structures
-const parseSize = (item: RawNewznabItem): number => {
-    // 1. Check standard enclosure attribute
-    if (item.enclosure?.["@attributes"]?.length) {
-        return parseInt(item.enclosure["@attributes"].length, 10);
+function parseSize(item: RawNewznabItem): number {
+    // Check paths in order of likelihood
+    const enclosure = item.enclosure;
+    if (enclosure) {
+        const attrs = enclosure["@attributes"];
+        if (attrs?.length) return parseInt(attrs.length, 10) || 0;
+        if (enclosure.length) return parseInt(String(enclosure.length), 10) || 0;
     }
-    // 2. Check direct length on enclosure
-    if (item.enclosure?.length) {
-        return parseInt(item.enclosure.length, 10);
-    }
-    // 3. Check explicit size property (some indexers)
-    if (item.size) {
-        return Number(item.size);
-    }
+    if (item.size) return Number(item.size) || 0;
     return 0;
-};
+}
 
-// --- Main Logic ---
+function extractGuid(guid: RawNewznabItem["guid"]): string {
+    if (typeof guid === "string") return guid;
+    if (guid && typeof guid === "object") {
+        return guid.text ?? guid["#text"] ?? "";
+    }
+    return "";
+}
+
+function parseItem(item: RawNewznabItem, indexerName: string, now: number): NzbResult {
+    const pubDateMs = new Date(item.pubDate).getTime();
+    const ageDays = Math.max(0, ((now - pubDateMs) / MS_PER_DAY) | 0);
+
+    return {
+        indexer: indexerName,
+        title: item.title,
+        guid: extractGuid(item.guid),
+        downloadUrl: item.link,
+        size: parseSize(item),
+        publishDate: new Date(pubDateMs).toISOString(),
+        age: ageDays,
+    };
+}
+
+// --- Fetch Logic ---
+
+async function fetchIndexer(
+    indexer: Indexer,
+    params: URLSearchParams,
+    now: number,
+): Promise<NzbResult[]> {
+    const url = `${indexer.url}/api?${params}`;
+
+    try {
+        const res = await fetch(url, {
+            headers: { "Accept": "application/json" },
+            signal: AbortSignal.timeout(15000),
+        });
+
+        if (!res.ok) {
+            console.error(`[${indexer.name}] HTTP ${res.status}`);
+            return [];
+        }
+
+        const data = await res.json() as RawNewznabResponse;
+        const items = data.channel?.item;
+
+        if (!items) return [];
+
+        // Handle single item vs array
+        const rawItems = Array.isArray(items) ? items : [items];
+
+        // Pre-allocate result array
+        const results = new Array<NzbResult>(rawItems.length);
+        for (let i = 0; i < rawItems.length; i++) {
+            results[i] = parseItem(rawItems[i], indexer.name, now);
+        }
+
+        return results;
+    } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[${indexer.name}] ${msg}`);
+        return [];
+    }
+}
+
+// --- Main Export ---
 
 export async function searchDirect(opts: SearchOptions): Promise<NzbResult[]> {
     const indexers = getEnabledIndexers();
+
     if (indexers.length === 0) {
-        console.warn("No indexers found in DB");
+        console.warn("[Search] No indexers configured");
         return [];
     }
 
-    // 1. Construct Query Parameters
-    const queryParams: Record<string, string> = {
+    // Build base query params once
+    const baseParams: Record<string, string> = {
         limit: String(opts.limit ?? 25),
         extended: "1",
-        o: "json", // Force JSON
+        o: "json",
     };
 
-    // Category logic (standard Newznab codes)
-    // 2000=Movies, 5000=TV
-    if (opts.type === "series") queryParams["cat"] = "5000,5030,5040";
-    else if (opts.type === "movie") queryParams["cat"] = "2000,2030,2040";
-
-    // Determine Search Mode (t parameter)
-    let mode = "search";
-    if (opts.type === "movie" && opts.imdbId) {
-        mode = "movie";
-        queryParams["imdbid"] = opts.imdbId.replace("tt", "");
-    } else if (opts.type === "series" && opts.tvdbId) {
-        mode = "tvsearch";
-        queryParams["tvdbid"] = opts.tvdbId;
-        if (opts.season) queryParams["season"] = String(opts.season);
-        if (opts.episode) queryParams["ep"] = String(opts.episode);
-    } else if (opts.name) {
-        // Text Fallback
-        mode = opts.type === "series" ? "tvsearch" : opts.type === "movie" ? "movie" : "search";
-
-        const parts = [opts.name];
-        if (opts.type === "movie" && opts.year) parts.push(opts.year);
-        else if (opts.season && opts.episode) parts.push(`S${String(opts.season).padStart(2, "0")}E${String(opts.episode).padStart(2, "0")}`);
-
-        queryParams["q"] = parts.join(" ");
+    // Categories
+    if (opts.type === "series") {
+        baseParams.cat = TV_CATEGORIES;
+    } else if (opts.type === "movie") {
+        baseParams.cat = MOVIE_CATEGORIES;
     }
 
-    queryParams["t"] = mode;
+    // Search mode & identifiers
+    let mode: string;
 
-    // 2. Execute Parallel Fetches
-    const fetchPromises = indexers.map(async (indexer) => {
-        const params = new URLSearchParams({
-            apikey: indexer.api_key,
-            ...queryParams
-        });
+    if (opts.type === "movie" && opts.imdbId) {
+        mode = "movie";
+        baseParams.imdbid = opts.imdbId.replace("tt", "");
+    } else if (opts.type === "series" && opts.tvdbId) {
+        mode = "tvsearch";
+        baseParams.tvdbid = opts.tvdbId;
+        if (opts.season) baseParams.season = String(opts.season);
+        if (opts.episode) baseParams.ep = String(opts.episode);
+    } else if (opts.name) {
+        mode = opts.type === "series" ? "tvsearch"
+            : opts.type === "movie" ? "movie"
+                : "search";
 
-        const url = `${indexer.url}/api?${params.toString()}`;
-        const logLabel = `[${indexer.name}]`;
-
-        try {
-            // console.log(`${logLabel} Requesting: ${url}`); // Debug
-            const res = await fetch(url);
-
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-            // We expect JSON now
-            const data = await res.json() as RawNewznabResponse;
-
-            if (!data.channel?.item) return [];
-
-            // Handle "item" being either an Object or an Array
-            const rawItems = Array.isArray(data.channel.item)
-                ? data.channel.item
-                : [data.channel.item];
-
-            return rawItems.map((item): NzbResult => {
-                const pubDateMs = new Date(item.pubDate).getTime();
-                const ageDays = Math.floor((Date.now() - pubDateMs) / (1000 * 60 * 60 * 24));
-
-                // Extract GUID (sometimes string, sometimes object with text)
-                const guid = typeof item.guid === 'object' && item.guid !== null
-                    ? (item.guid as any).text || (item.guid as any)["#text"]
-                    : item.guid;
-
-                return {
-                    indexer: indexer.name,
-                    title: item.title,
-                    guid: String(guid),
-                    downloadUrl: item.link,
-                    size: parseSize(item),
-                    publishDate: new Date(pubDateMs).toISOString(),
-                    age: ageDays > 0 ? ageDays : 0,
-                };
-            });
-
-        } catch (err: any) {
-            console.error(`${logLabel} Failed: ${err.message}`);
-            return [];
+        let query = opts.name;
+        if (opts.type === "movie" && opts.year) {
+            query += ` ${opts.year}`;
+        } else if (opts.season && opts.episode) {
+            query += ` S${String(opts.season).padStart(2, "0")}E${String(opts.episode).padStart(2, "0")}`;
         }
+        baseParams.q = query;
+    } else {
+        mode = "search";
+    }
+
+    baseParams.t = mode;
+
+    // Capture timestamp once for consistent age calculation
+    const now = Date.now();
+
+    // Build per-indexer params (only apikey differs)
+    const fetchPromises = indexers.map((indexer) => {
+        const params = new URLSearchParams(baseParams);
+        params.set("apikey", indexer.api_key);
+        return fetchIndexer(indexer, params, now);
     });
 
+    // Parallel fetch all indexers
     const groupedResults = await Promise.all(fetchPromises);
-    const flatResults = groupedResults.flat();
 
-    // 3. Deduplicate & Filter (Logic preserved)
+    // Flatten with size hint for better allocation
+    const totalHint = groupedResults.reduce((sum, arr) => sum + arr.length, 0);
+    const flatResults: NzbResult[] = [];
+    flatResults.length = totalHint;
+
+    let idx = 0;
+    for (const group of groupedResults) {
+        for (const result of group) {
+            flatResults[idx++] = result;
+        }
+    }
+    flatResults.length = idx; // Trim if overallocated
+
+    // Skip filtering if no results
+    if (flatResults.length === 0) {
+        console.log("[Search] No results found");
+        return [];
+    }
+
+    // Deduplicate & filter
     const bestResults = new Map<string, NzbResult>();
+    const needsEpisodeCheck = opts.season !== undefined && opts.episode !== undefined;
+    const needsNameCheck = opts.name !== undefined;
 
-    for (const result of flatResults) {
+    for (let i = 0; i < flatResults.length; i++) {
+        const result = flatResults[i];
+
+        // Skip invalid entries
         if (!result.downloadUrl || !result.title) continue;
 
-        if (opts.season && opts.episode && !fileMatchesEpisode(result.title, opts.season, opts.episode)) {
+        // Episode filter
+        if (needsEpisodeCheck && !fileMatchesEpisode(result.title, opts.season!, opts.episode!)) {
             continue;
         }
 
-        if (opts.name && !titleContainsName(result.title, opts.name)) {
+        // Name filter
+        if (needsNameCheck && !titleContainsName(result.title, opts.name!)) {
             continue;
         }
 
+        // Dedupe by normalized title, keep largest
         const key = normalizeTitle(result.title);
         const existing = bestResults.get(key);
 
-        // Keep if new, or if larger size (better quality heuristic)
         if (!existing || result.size > existing.size) {
             bestResults.set(key, result);
         }
     }
 
+    // Convert to array and sort by size descending
     const finalResults = Array.from(bestResults.values());
     finalResults.sort((a, b) => b.size - a.size);
 
-    console.log(`[Aggregator] Found ${finalResults.length} unique results.`);
+    console.log(`[Search] ${finalResults.length} unique results from ${indexers.length} indexers`);
     return finalResults;
+}
+
+/**
+ * Search with timeout wrapper - useful for UI with loading states
+ */
+export async function searchDirectWithTimeout(
+    opts: SearchOptions,
+    timeoutMs = 20000,
+): Promise<NzbResult[]> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+        return await searchDirect(opts);
+    } finally {
+        clearTimeout(timeout);
+    }
 }

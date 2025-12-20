@@ -1,97 +1,208 @@
 import { Redis } from "ioredis";
 import { Config } from "../env.ts";
 
-export const redis = new Redis(Config.REDIS_URL);
+// ═══════════════════════════════════════════════════════════════════
+// Constants & Initialization
+// ═══════════════════════════════════════════════════════════════════
 
-// --- Event Listeners ---
-redis.on("error", (err) => console.error(`%c[Redis] %cError: ${err}`, "color: red;", "color: orange;"));
-redis.on("connect", () => console.log("%c[Redis] %cConnected", "color: red;", "color: green;"));
-redis.on("ready", () => console.log("%c[Redis] %cReady", " color: red;", "color: green;"));
-redis.on("reconnecting", () => console.log("%c[Redis] %cReconnecting...", "color: red;", "color: orange;"));
-redis.on("close", () => console.warn("%c[Redis] Connection closed", "color: red;"));
+const LOG_PREFIX = "%c[Redis]%c";
+const STYLE_LABEL = "color: #ff6b6b; font-weight: bold;";
+const STYLE_OK = "color: #51cf66;";
+const STYLE_WARN = "color: #fcc419;";
+const STYLE_ERR = "color: #ff922b;";
+
+export const redis = new Redis(Config.REDIS_URL, {
+    enableReadyCheck: true,
+    maxRetriesPerRequest: 3,
+    retryStrategy: (times) => Math.min(times * 50, 2000),
+    enableOfflineQueue: true,
+});
+
+redis
+    .on("error", (err) => console.error(LOG_PREFIX, STYLE_LABEL, STYLE_ERR, `Error: ${err.message}`))
+    .on("connect", () => console.log(LOG_PREFIX, STYLE_LABEL, STYLE_OK, "Connected"))
+    .on("ready", () => console.log(LOG_PREFIX, STYLE_LABEL, STYLE_OK, "Ready"))
+    .on("reconnecting", () => console.log(LOG_PREFIX, STYLE_LABEL, STYLE_WARN, "Reconnecting..."))
+    .on("close", () => console.warn(LOG_PREFIX, STYLE_LABEL, STYLE_WARN, "Connection closed"));
+
+// ═══════════════════════════════════════════════════════════════════
+// Core Operations
+// ═══════════════════════════════════════════════════════════════════
 
 /**
- * Sets a JSON value at a specific path in RedisJSON using a pipeline for efficiency.
- * @param key The Redis key.
- * @param path The JSONPath (e.g. '$' or '$.field').
- * @param data The data to store.
- * @param expirationSeconds Optional TTL in seconds.
- * @param mode Optional 'NX' (only set if not exists) or 'XX' (only set if exists).
+ * Sets a JSON value with optional expiration. Uses pipeline for atomic operation.
  */
-export async function setJsonValue<T>(
+export function setJsonValue<T>(
     key: string,
     path: string,
     data: T,
     expirationSeconds?: number,
-    mode?: 'NX' | 'XX'
+    mode?: "NX" | "XX",
 ): Promise<boolean> {
-    try {
-        const pipeline = redis.pipeline();
-        const args = [key, path, JSON.stringify(data)];
-        if (mode) args.push(mode);
+    const pipeline = redis.pipeline();
 
-        // 1. Queue JSON.SET
-        pipeline.call("JSON.SET", ...args);
+    // Build args array
+    const args: (string | number)[] = [key, path, JSON.stringify(data)];
+    if (mode) args.push(mode);
 
-        // 2. Queue EXPIRE if needed
-        if (expirationSeconds && expirationSeconds > 0) {
-            pipeline.expire(key, expirationSeconds);
+    pipeline.call("JSON.SET", ...args);
+
+    if (expirationSeconds && expirationSeconds > 0) {
+        pipeline.expire(key, expirationSeconds);
+    }
+
+    return pipeline.exec().then(
+        (results) => results?.[0]?.[1] === "OK",
+        (err) => {
+            console.error(LOG_PREFIX, STYLE_LABEL, STYLE_ERR, `SET ${key}: ${err.message}`);
+            return false;
         }
+    );
+}
 
-        // Execute both in one round-trip
-        const results = await pipeline.exec();
-        if (!results) return false;
+/**
+ * Sets JSON value without waiting - fire and forget.
+ * Use when you don't need confirmation (e.g., caching).
+ */
+export function setJsonValueAsync<T>(
+    key: string,
+    path: string,
+    data: T,
+    expirationSeconds?: number,
+): void {
+    const pipeline = redis.pipeline();
+    pipeline.call("JSON.SET", key, path, JSON.stringify(data));
+    if (expirationSeconds) pipeline.expire(key, expirationSeconds);
+    pipeline.exec().catch(() => { }); // Swallow errors silently
+}
 
-        // Check result of JSON.SET (index 0)
-        // ioredis pipeline result format: [[error, result], [error, result]]
-        const [err, response] = results[0];
+/**
+ * Gets and parses a JSON value. Returns undefined on miss for easier nullish coalescing.
+ */
+export async function getJsonValue<T>(
+    key: string,
+    path = "$",
+): Promise<T | undefined> {
+    try {
+        const result = await redis.call("JSON.GET", key, path) as string | null;
+        if (!result) return undefined;
 
-        if (err) throw err;
-        return response === "OK";
+        const parsed = JSON.parse(result);
 
-    } catch (err) {
-        console.error(`%c[Redis] %cFailed to set JSON for ${key}: ${err}`, "color: red;", "color: orange;");
-        return false;
+        // Unwrap RedisJSON array wrapper
+        return Array.isArray(parsed) ? parsed[0] : parsed;
+    } catch {
+        return undefined;
     }
 }
 
 /**
- * Gets and parses a JSON value from a specific path in RedisJSON.
- * Automatically unwraps the array format that RedisJSON returns for path queries.
+ * Batch get multiple JSON keys in one round-trip.
  */
-export async function getJsonValue<T>(
-    key: string,
-    path: string = '$'
-): Promise<T | null> {
-    try {
-        const result = await redis.call('JSON.GET', key, path) as string | null;
-        if (!result) return null;
+export async function getJsonValues<T>(
+    keys: string[],
+    path = "$",
+): Promise<(T | undefined)[]> {
+    if (keys.length === 0) return [];
 
-        const parsed = JSON.parse(result);
-
-        // RedisJSON `JSON.GET key path` returns an array [value].
-        // We unwrap it to return the direct value T.
-        if (Array.isArray(parsed)) {
-            return parsed.length > 0 ? parsed[0] as T : null;
-        }
-
-        return parsed as T;
-    } catch (e) {
-        console.error(`%c[Redis] %cFailed to parse JSON for key ${key} at path ${path}. ${e}`, "color: red;", "color: orange;");
-        return null;
+    const pipeline = redis.pipeline();
+    for (const key of keys) {
+        pipeline.call("JSON.GET", key, path);
     }
+
+    const results = await pipeline.exec();
+    if (!results) return new Array(keys.length).fill(undefined);
+
+    return results.map(([err, result]) => {
+        if (err || !result) return undefined;
+        try {
+            const parsed = JSON.parse(result as string);
+            return Array.isArray(parsed) ? parsed[0] : parsed;
+        } catch {
+            return undefined;
+        }
+    });
+}
+
+/**
+ * Batch set multiple JSON key-value pairs in one round-trip.
+ */
+export function setJsonValues<T>(
+    entries: Array<{ key: string; data: T; ttl?: number }>,
+    path = "$",
+): Promise<boolean[]> {
+    if (entries.length === 0) return Promise.resolve([]);
+
+    const pipeline = redis.pipeline();
+
+    for (const { key, data, ttl } of entries) {
+        pipeline.call("JSON.SET", key, path, JSON.stringify(data));
+        if (ttl) pipeline.expire(key, ttl);
+    }
+
+    return pipeline.exec().then(
+        (results) => {
+            if (!results) return entries.map(() => false);
+
+            // Every other result is the JSON.SET (if TTL was set)
+            const out: boolean[] = [];
+            let i = 0;
+            for (const entry of entries) {
+                out.push(results[i]?.[1] === "OK");
+                i += entry.ttl ? 2 : 1;
+            }
+            return out;
+        },
+        () => entries.map(() => false)
+    );
 }
 
 /**
  * Deletes a specific path within a JSON document.
- * @returns The number of paths deleted (usually 1 or 0).
  */
-export async function deleteJsonPath(key: string, path: string): Promise<number> {
-    try {
-        const result = await redis.call("JSON.DEL", key, path);
-        return Number(result);
-    } catch (e) {
-        console.error(`%c[Redis] %cError deleting path ${path} in ${key}: ${e}`, "color: red;", "color: orange;");
-        return 0;
-    }
+export function deleteJsonPath(key: string, path: string): Promise<number> {
+    return redis.call("JSON.DEL", key, path).then(
+        (result) => Number(result),
+        () => 0
+    );
+}
+
+/**
+ * Check if a key exists (faster than GET for existence checks).
+ */
+export function exists(key: string): Promise<boolean> {
+    return redis.exists(key).then((r) => r === 1);
+}
+
+/**
+ * Check multiple keys exist in one round-trip.
+ */
+export function existsMany(keys: string[]): Promise<number> {
+    if (keys.length === 0) return Promise.resolve(0);
+    return redis.exists(...keys);
+}
+
+/**
+ * Set with lock pattern - returns true if lock acquired.
+ */
+export function acquireLock(
+    key: string,
+    ttlSeconds: number,
+): Promise<boolean> {
+    return redis.set(key, "1", "EX", ttlSeconds, "NX").then((r) => r === "OK");
+}
+
+/**
+ * Release a lock.
+ */
+export function releaseLock(key: string): Promise<void> {
+    return redis.del(key).then(() => { });
+}
+
+/**
+ * Graceful shutdown.
+ */
+export async function closeRedis(): Promise<void> {
+    await redis.quit();
+    console.log(LOG_PREFIX, STYLE_LABEL, STYLE_OK, "Disconnected gracefully");
 }

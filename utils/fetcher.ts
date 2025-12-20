@@ -1,48 +1,60 @@
-// deno-lint-ignore-file no-explicit-any
-
 /**
- * Custom Error class that includes the server's response body in the message
- * for immediate visibility in logs.
+ * Custom Error class that includes the server's response body in the message.
  */
 export class HttpError extends Error {
-    public status: number;
-    public statusText: string;
-    public url: string;
-    public response: Response;
-    public data: any;
+    readonly status: number;
+    readonly statusText: string;
+    readonly url: string;
+    readonly data: unknown;
 
-    constructor(response: Response, data: any) {
-        // Optimization: Append the actual server error text to the message
-        // This ensures logs show "400: API Key Missing" instead of just "400: Bad Request"
-        const serverMessage = typeof data === 'string'
+    constructor(response: Response, data: unknown) {
+        const serverMessage = typeof data === "string"
             ? data
-            : (data?.error || data?.message || JSON.stringify(data));
+            : (data as Record<string, unknown>)?.error ??
+            (data as Record<string, unknown>)?.message ??
+            (data ? JSON.stringify(data) : "");
 
-        const cleanMessage = serverMessage
-            ? `Request failed (${response.status}): ${serverMessage}`
-            : `Request failed with status ${response.status}: ${response.statusText}`;
-
-        super(cleanMessage);
+        super(
+            serverMessage
+                ? `Request failed (${response.status}): ${serverMessage}`
+                : `Request failed with status ${response.status}: ${response.statusText}`
+        );
 
         this.name = "HttpError";
         this.status = response.status;
         this.statusText = response.statusText;
         this.url = response.url;
-        this.response = response;
         this.data = data;
+
+        // Capture stack trace properly in V8
+        Error.captureStackTrace?.(this, HttpError);
     }
 }
 
 export interface FetcherOptions extends Omit<RequestInit, "body"> {
-    body?: any;
+    body?: unknown;
     parseJson?: boolean;
     timeoutMs?: number;
     params?: Record<string, string | number | boolean | undefined | null>;
 }
 
-export async function fetcher<T = any>(
+// Pre-allocated constants
+const JSON_CONTENT_TYPE = "application/json";
+const CONTENT_TYPE = "Content-Type";
+const ACCEPT = "Accept";
+
+// Reusable type guards
+const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+    v !== null &&
+    typeof v === "object" &&
+    !(v instanceof FormData) &&
+    !(v instanceof Blob) &&
+    !(v instanceof URLSearchParams) &&
+    !(v instanceof ArrayBuffer);
+
+export async function fetcher<T = unknown>(
     input: string | URL,
-    options: FetcherOptions = {}
+    options: FetcherOptions = {},
 ): Promise<T> {
     const {
         parseJson = true,
@@ -50,87 +62,90 @@ export async function fetcher<T = any>(
         headers: initHeaders,
         params,
         body,
-        method = "GET", // Default to GET explicitly to help logic below
+        method = "GET",
+        signal: externalSignal,
         ...fetchOptions
     } = options;
 
-    // 1. Construct URL with Params (Deduplication Logic)
-    const url = new URL(input.toString());
+    // 1. URL Construction
+    const url = typeof input === "string" ? new URL(input) : input;
 
     if (params) {
-        Object.entries(params).forEach(([key, value]) => {
-            if (value !== undefined && value !== null) {
-                // OPTIMIZATION: Use .set() instead of .append().
-                // If 'apikey' is already in the Config.NZBDAV_URL, this prevents 
-                // sending "?apikey=XYZ&apikey=XYZ", which causes 400 Errors on SABnzbd.
-                url.searchParams.set(key, String(value));
+        const searchParams = url.searchParams;
+        for (const key in params) {
+            const value = params[key];
+            if (value != null) {
+                searchParams.set(key, String(value));
             }
-        });
-    }
-
-    // 2. Prepare Headers
-    const headers = new Headers(initHeaders);
-
-    // 3. Body Transformation
-    let finalBody = body;
-    const isPlainObject = body && typeof body === "object" &&
-        !(body instanceof FormData) &&
-        !(body instanceof Blob) &&
-        !(body instanceof URLSearchParams);
-
-    if (isPlainObject) {
-        finalBody = JSON.stringify(body);
-        if (!headers.has("Content-Type")) {
-            headers.set("Content-Type", "application/json");
         }
     }
 
-    // 4. GET Request Sanitation
-    // Strict servers (like some SABnzbd/NZBGet versions) throw 400 if Content-Type is present on GET.
-    if (method.toUpperCase() === "GET") {
-        headers.delete("Content-Type");
-        finalBody = undefined; // Ensure no body is sent on GET
+    // 2. Headers & Body
+    const headers = new Headers(initHeaders);
+    const isGet = method === "GET" || method === "get";
+
+    let finalBody: BodyInit | undefined;
+
+    if (!isGet && body !== undefined) {
+        if (isPlainObject(body)) {
+            finalBody = JSON.stringify(body);
+            if (!headers.has(CONTENT_TYPE)) {
+                headers.set(CONTENT_TYPE, JSON_CONTENT_TYPE);
+            }
+        } else {
+            finalBody = body as BodyInit;
+        }
     }
 
-    if (parseJson && !headers.has("Accept")) {
-        headers.set("Accept", "application/json");
+    // GET requests: ensure no Content-Type
+    if (isGet) {
+        headers.delete(CONTENT_TYPE);
     }
 
-    // 5. Timeout Handling
+    if (parseJson && !headers.has(ACCEPT)) {
+        headers.set(ACCEPT, JSON_CONTENT_TYPE);
+    }
+
+    // 3. Abort Handling
     const controller = new AbortController();
+    const signal = controller.signal;
+
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-    if (options.signal) {
-        options.signal.addEventListener("abort", () => controller.abort());
+    // Link external signal if provided
+    const onExternalAbort = externalSignal
+        ? () => controller.abort()
+        : undefined;
+
+    if (onExternalAbort) {
+        externalSignal!.addEventListener("abort", onExternalAbort);
     }
 
     try {
-        const response = await fetch(url.toString(), {
+        const response = await fetch(url, {
             ...fetchOptions,
             method,
             headers,
             body: finalBody,
-            signal: controller.signal,
+            signal,
         });
 
         if (!response.ok) {
-            let errorData;
+            const contentType = response.headers.get("content-type");
+            let errorData: unknown;
+
             try {
-                const contentType = response.headers.get("content-type");
-                // SABnzbd often returns "text/plain" for API errors even if JSON was requested
-                if (contentType?.includes("application/json")) {
-                    errorData = await response.json();
-                } else {
-                    errorData = await response.text();
-                    // Clean up trailing newlines common in SABnzbd error outputs
-                    errorData = errorData.trim();
-                }
+                errorData = contentType?.includes("json")
+                    ? await response.json()
+                    : (await response.text()).trim();
             } catch {
                 errorData = "Unknown error (could not parse body)";
             }
+
             throw new HttpError(response, errorData);
         }
 
+        // 204 No Content
         if (response.status === 204) {
             return null as T;
         }
@@ -139,14 +154,66 @@ export async function fetcher<T = any>(
             return response as unknown as T;
         }
 
-        return await response.json();
+        return await response.json() as T;
 
-    } catch (err: any) {
-        if (err.name === "AbortError") {
-            throw new Error(`Request timed out or was aborted after ${timeoutMs}ms`);
+    } catch (err) {
+        if ((err as Error).name === "AbortError") {
+            throw new Error(`Request timed out after ${timeoutMs}ms`);
         }
         throw err;
     } finally {
         clearTimeout(timeoutId);
+        if (onExternalAbort) {
+            externalSignal!.removeEventListener("abort", onExternalAbort);
+        }
     }
+}
+
+/**
+ * Fire-and-forget fetch - doesn't wait for response body
+ * Useful for logging endpoints, webhooks, etc.
+ */
+export function fetcherFireAndForget(
+    input: string | URL,
+    options: FetcherOptions = {},
+): void {
+    fetcher(input, { ...options, parseJson: false }).catch(() => { });
+}
+
+/**
+ * Fetch with automatic retry and exponential backoff
+ */
+export async function fetcherWithRetry<T = unknown>(
+    input: string | URL,
+    options: FetcherOptions & {
+        retries?: number;
+        retryDelay?: number;
+        retryOn?: (error: unknown, attempt: number) => boolean;
+    } = {},
+): Promise<T> {
+    const {
+        retries = 3,
+        retryDelay = 1000,
+        retryOn = (err) => err instanceof HttpError && err.status >= 500,
+        ...fetcherOptions
+    } = options;
+
+    let lastError: unknown;
+
+    for (let attempt = 0; attempt <= retries; attempt++) {
+        try {
+            return await fetcher<T>(input, fetcherOptions);
+        } catch (err) {
+            lastError = err;
+
+            if (attempt < retries && retryOn(err, attempt)) {
+                await new Promise(r => setTimeout(r, retryDelay * (2 ** attempt)));
+                continue;
+            }
+
+            throw err;
+        }
+    }
+
+    throw lastError;
 }
