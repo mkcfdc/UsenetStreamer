@@ -17,7 +17,7 @@ interface CinemetaData {
     year: string;
     tvdbId?: string;
     tmdbId?: string;
-    imdbId?: string; // Added to handle backward compatibility with indexers 
+    imdbId?: string; // Added to handle backward compatibility with indexers
 }
 
 export interface SearchResult {
@@ -181,7 +181,7 @@ function mapToSearchResult(r: RawSearchResult): SearchResult {
 // --- TMDB FETCH LOGIC ---
 async function getTmdbData(type: "movie" | "series", tmdbIdFull: string): Promise<CinemetaData> {
     const tmdbId = tmdbIdFull.replace("tmdb:", "");
-    const apiKey = Config.TMDB_API_KEY; // <-- Make sure to add this in env.ts
+    const apiKey = Config.TMDB_API_KEY;
 
     if (!apiKey) {
         throw new Error("TMDB_API_KEY is missing in env.ts. Required for adult/TMDB metadata.");
@@ -204,10 +204,14 @@ async function getTmdbData(type: "movie" | "series", tmdbIdFull: string): Promis
     const tvdbId = externalIds.tvdb_id || data.tvdb_id;
 
     return {
-        name: type === "movie" ? data.title : data.name,
-        year: type === "movie"
+        // Fallback to title/name or "Unknown"
+        name: (type === "movie" ? data.title : data.name) || "Unknown",
+
+        // Add || "" so we don't return undefined and cause String(undefined) -> "undefined" later
+        year: (type === "movie"
             ? data.release_date?.substring(0, 4)
-            : data.first_air_date?.substring(0, 4),
+            : data.first_air_date?.substring(0, 4)) || "",
+
         tmdbId: tmdbId,
         tvdbId: tvdbId ? String(tvdbId) : undefined,
         imdbId: imdbId ? String(imdbId) : undefined, // Useful if Indexer only works with IMDB IDs
@@ -307,7 +311,8 @@ export async function getMediaAndSearchResults(
                 tvdbId: cinemetaData.tvdbId,
                 tmdbId: resolvedTmdbId,
                 name: cinemetaData.name,
-                year: String(cinemetaData.year),
+                // Safely handle missing years so we don't send "undefined" text strings to indexers
+                year: cinemetaData.year ? String(cinemetaData.year) : undefined,
                 type,
                 limit: 50,
                 season,
