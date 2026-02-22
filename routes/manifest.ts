@@ -21,7 +21,7 @@ export const manifestRoute: RouteMatch = {
             resources: ["stream"],
             types: ["movie", "series"],
             catalogs: [],
-            idPrefixes: ["tt"],
+            idPrefixes: ["tt","tmdb:"],
         });
     },
 };
