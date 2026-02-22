@@ -17,6 +17,7 @@ interface CinemetaData {
     year: string;
     tvdbId?: string;
     tmdbId?: string;
+    imdbId?: string; // Added to handle backward compatibility with indexers 
 }
 
 export interface SearchResult {
@@ -177,17 +178,54 @@ function mapToSearchResult(r: RawSearchResult): SearchResult {
     };
 }
 
+// --- TMDB FETCH LOGIC ---
+async function getTmdbData(type: "movie" | "series", tmdbIdFull: string): Promise<CinemetaData> {
+    const tmdbId = tmdbIdFull.replace("tmdb:", "");
+    const apiKey = Config.TMDB_API_KEY; // <-- Make sure to add this in env.ts
+
+    if (!apiKey) {
+        throw new Error("TMDB_API_KEY is missing in env.ts. Required for adult/TMDB metadata.");
+    }
+
+    const endpoint = type === "movie" ? `movie/${tmdbId}` : `tv/${tmdbId}`;
+    // appending external_ids returns corresponding IMDB & TVDB IDs alongside metadata in a single request
+    const url = `https://api.themoviedb.org/3/${endpoint}?api_key=${apiKey}&append_to_response=external_ids`;
+
+    const res = await fetch(url);
+    if (!res.ok) {
+        throw new Error(`TMDB API Error: ${res.status} ${res.statusText}`);
+    }
+
+    const data = await res.json();
+    const externalIds = data.external_ids || {};
+
+    // Extract linked IDs if available
+    const imdbId = externalIds.imdb_id || data.imdb_id;
+    const tvdbId = externalIds.tvdb_id || data.tvdb_id;
+
+    return {
+        name: type === "movie" ? data.title : data.name,
+        year: type === "movie"
+            ? data.release_date?.substring(0, 4)
+            : data.first_air_date?.substring(0, 4),
+        tmdbId: tmdbId,
+        tvdbId: tvdbId ? String(tvdbId) : undefined,
+        imdbId: imdbId ? String(imdbId) : undefined, // Useful if Indexer only works with IMDB IDs
+    };
+}
+
 export async function getMediaAndSearchResults(
     type: "movie" | "series",
     episodeInfo: RequestedEpisode,
 ): Promise<{ cinemetaData: CinemetaData; results: SearchResult[] }> {
-    const { imdbid: imdbId, season, episode } = episodeInfo;
-    if (!imdbId) throw new Error("IMDB ID is required");
+    const { imdbid: requestedId, season, episode } = episodeInfo;
+    if (!requestedId) throw new Error("An ID is required");
 
-    const cinemetaKey = `cinemeta:${type}:${imdbId}`;
+    // We now use requestedId as the cache key, covering both "tt1234567" and "tmdb:12345" seamlessly.
+    const cinemetaKey = `cinemeta:${type}:${requestedId}`;
     const searchKey = (season && episode)
-        ? `search:${imdbId}:${season}:${episode}`
-        : `search:${imdbId}`;
+        ? `search:${requestedId}:${season}:${episode}`
+        : `search:${requestedId}`;
 
     // L1: Check memory first for both
     const l1Meta = l1Cache.get(cinemetaKey) as CinemetaData | undefined;
@@ -233,12 +271,17 @@ export async function getMediaAndSearchResults(
         return { cinemetaData: cachedMeta, results: cachedResults };
     }
 
-    // Get cinemeta
+    // Get metadata (direct TMDB or Cinemeta)
     const cinemetaData = cachedMeta ?? await getOrCompute<CinemetaData>(
         cinemetaKey,
         CINEMETA_INFLIGHT_TTL_SEC,
         CINEMETA_CACHE_TTL,
-        () => getCinemetaData(type, imdbId) as Promise<CinemetaData>,
+        () => {
+            if (requestedId.startsWith("tmdb:")) {
+                return getTmdbData(type, requestedId);
+            }
+            return getCinemetaData(type, requestedId) as Promise<CinemetaData>;
+        },
     );
 
     // Fast path: only search missing
@@ -252,10 +295,17 @@ export async function getMediaAndSearchResults(
         SEARCH_INFLIGHT_TTL_SEC,
         SEARCH_CACHE_TTL,
         async () => {
+            // Find the actual IMDB ID to give to indexers, if TMDB was able to map one.
+            const resolvedImdbId = requestedId.startsWith("tmdb:")
+                ? cinemetaData.imdbId
+                : requestedId;
+
+            const resolvedTmdbId = cinemetaData.tmdbId || (requestedId.startsWith("tmdb:") ? requestedId.replace("tmdb:", "") : undefined);
+
             const opts = {
-                imdbId,
+                imdbId: resolvedImdbId, // If TMDB item has no mapped IMDB ID, this passes cleanly as undefined
                 tvdbId: cinemetaData.tvdbId,
-                tmdbId: cinemetaData.tmdbId,
+                tmdbId: resolvedTmdbId,
                 name: cinemetaData.name,
                 year: String(cinemetaData.year),
                 type,

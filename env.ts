@@ -6,6 +6,7 @@ import { getOrSetSetting } from "./utils/sqlite.ts";
  */
 export const Config = {
     CINEMETA_URL: "https://v3-cinemeta.strem.io/meta",
+    TMDB_API_KEY: Deno.env.get("TMDB_API_KEY") || "",
 
     get ADDON_BASE_URL() {
         const val = getOrSetSetting("ADDON_BASE_URL", "", "Public URL for the addon");
