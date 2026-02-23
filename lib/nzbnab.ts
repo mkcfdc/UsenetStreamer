@@ -40,7 +40,7 @@ interface RawNewznabResponse {
 }
 
 const MS_PER_DAY = 86400000; // 1000 * 60 * 60 * 24
-const MOVIE_CATEGORIES = "2000,2030,2040,6010,6030,6040";
+const MOVIE_CATEGORIES = "2000,2030,2040";
 const TV_CATEGORIES = "5000,5030,5040";
 
 // Pre-compiled regex for performance
