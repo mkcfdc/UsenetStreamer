@@ -57,7 +57,6 @@ export const streamRoute: RouteMatch = {
             }
 
             // 3. Prepare NZB Checks & Enrich Data
-            // Optimization: Single pass to extract GUIDs and prepare check list
             const itemsToCheck: any[] = [];
             const validResults: any[] = [];
 
@@ -88,29 +87,14 @@ export const streamRoute: RouteMatch = {
                 if (status?.is_complete === false) continue;
 
                 r.is_complete = status?.is_complete ?? null;
-                // We only need these if we are strictly debugging, otherwise we can skip assigning to `r` to save ops
-                // r.cache_hit = status?.cache_hit ?? false; 
-                // r.last_updated = status?.last_updated ?? null;
 
-                // Optimization: Parse filename to get resolution for grouping.
-                // We do NOT format the video card (UI Text) yet. That is expensive string manipulation.
                 const parsed = parseRelease(r.title, isSeries);
 
-                // We need to generate the resolution string key (e.g., "4k", "1080p")
-                // Assuming formatVideoCard is the only way to get the canonical resolution string
-                // If getResolutionIcon/Rank can work off parsed object, use that. 
-                // Falling back to standard formatVideoCard call but passing minimal info to be fast.
-                const { resolution } = formatVideoCard(parsed, {
-                    size: "0", // Dummy value, we don't need the string yet
-                    proxied: false,
-                    source: r.indexer,
-                    isComplete: r.is_complete,
-                    age: r.age,
-                    grabs: r.grabs,
-                });
+                // OPTIMIZATION: Extract resolution directly instead of doing a dummy formatVideoCard call
+                const resolution = parsed.resolution || "Unknown";
 
                 r.resolution = resolution;
-                r.parsedInfo = parsed; // Save parsed info for later
+                r.parsedInfo = parsed;
 
                 let group = grouped.get(resolution);
                 if (!group) {
@@ -120,8 +104,7 @@ export const streamRoute: RouteMatch = {
                 group.push(r);
             }
 
-            // 6. Sort, Slice, and Format Winners
-            // We sort groups, slice the top 5, and ONLY format the UI strings for those 5.
+            // 6. Sort and Slice Winners
             const sortedResolutions = Array.from(grouped.keys())
                 .sort((a, b) => getResolutionRank(b) - getResolutionRank(a));
 
@@ -129,31 +112,17 @@ export const streamRoute: RouteMatch = {
             const getPipeline = redis.pipeline();
             const USE_NNTP = Config.USE_STREMIO_NNTP;
 
-            for (const res of sortedResolutions) {
+            for (let i = 0; i < sortedResolutions.length; i++) {
+                const res = sortedResolutions[i];
                 const group = grouped.get(res)!;
 
-                // Sort by Age then Size (standard retention strategy)
-                // Using (a.age - b.age) is standard.
-                // Optimization: Slice(0, 5) immediately after sort.
-                const winners = group
-                    .sort((a, b) => (a.age - b.age) || (b.size - a.size))
-                    .slice(0, 5);
+                // Sort by Age then Size, and limit to top 5
+                group.sort((a, b) => (a.age - b.age) || (b.size - a.size));
+                const limit = Math.min(group.length, 5);
 
-                for (const r of winners) {
-                    // NOW we do the expensive string building, only for the streams that will actually be shown.
-                    const { lines } = formatVideoCard(r.parsedInfo, {
-                        size: (r.size / GIGABYTE).toFixed(2).replace(/\.?0+$/, ""),
-                        proxied: false,
-                        source: r.indexer ?? "Usenet",
-                        isComplete: r.is_complete,
-                        age: r.age,
-                        grabs: r.grabs,
-                    });
-
-                    r.lines = lines;
+                for (let j = 0; j < limit; j++) {
+                    const r = group[j];
                     r.hash = md5(r.downloadUrl);
-
-                    // Add to result list
                     finalStreamsRaw.push(r);
 
                     // Queue Redis GET
@@ -161,13 +130,36 @@ export const streamRoute: RouteMatch = {
                 }
             }
 
-            // 7. Execute Redis GETs
-            const cacheChecks = finalStreamsRaw.length > 0 ? await getPipeline.exec() : [];
+            // 7. OPTIMIZATION: Fire the Redis Pipeline IMMEDIATELY
+            // This allows the network roundtrip to happen concurrently with our string formatting
+            const cacheChecksPromise = finalStreamsRaw.length > 0 ? getPipeline.exec() : Promise.resolve([]);
 
-            // 8. Construct Streams & Queue Redis SETs
+            // 8. Execute heavy CPU formatting while waiting for Redis
+            for (let i = 0; i < finalStreamsRaw.length; i++) {
+                const r = finalStreamsRaw[i];
+
+                // Faster float formatting: trims zeros automatically via Number() cast
+                const sizeStr = Number((r.size / GIGABYTE).toFixed(2)).toString();
+
+                const { lines } = formatVideoCard(r.parsedInfo, {
+                    size: sizeStr,
+                    proxied: false,
+                    source: r.indexer ?? "Usenet",
+                    isComplete: r.is_complete,
+                    age: r.age,
+                    grabs: r.grabs,
+                });
+
+                r.lines = lines;
+            }
+
+            // 9. Await Redis results
+            const cacheChecks = await cacheChecksPromise;
+
+            // 10. Construct Streams & Queue Redis SETs
             const setPipeline = redis.pipeline();
             const streams: Stream[] = [];
-            const addonBase = Config.ADDON_BASE_URL; // Local ref
+            const addonBase = Config.ADDON_BASE_URL;
 
             for (let i = 0; i < finalStreamsRaw.length; i++) {
                 const r = finalStreamsRaw[i];
@@ -215,10 +207,11 @@ export const streamRoute: RouteMatch = {
                     }),
                     "NX",
                 );
+                // Expiration still runs even if NX skips the SET, giving you active-refreshing TTL!
                 setPipeline.expire(`streams:${hash}`, STREAM_TTL);
             }
 
-            // 9. Fire and await SETs (Must await in Deno/Serverless context to ensure execution)
+            // 11. Fire SETs (must await to ensure V8/Deno completes them before GC sweep)
             if (streams.length > 0) {
                 await setPipeline.exec();
             }

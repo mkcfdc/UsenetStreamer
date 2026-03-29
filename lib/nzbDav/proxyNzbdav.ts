@@ -3,13 +3,14 @@ import { Config } from "../../env.ts";
 import { streamFailureVideo } from "../streamFailureVideo.ts";
 
 // Connection pooling optimized for streaming
+// Note: If you ever experience random stream drops with older WebDAV servers, 
+// consider changing http2 to `false`. Some older servers have spotty HTTP/2 chunking.
 const httpClient = Deno.createHttpClient({
     poolIdleTimeout: 60_000,
     poolMaxIdlePerHost: 50,
-    http2: true,
+    http2: false,
 });
 
-// Pre-calculated auth header
 const AUTH_HEADER =
     Config.NZBDAV_WEBDAV_USER && Config.NZBDAV_WEBDAV_PASS
         ? `Basic ${btoa(`${Config.NZBDAV_WEBDAV_USER}:${Config.NZBDAV_WEBDAV_PASS}`)}`
@@ -18,7 +19,6 @@ const AUTH_HEADER =
 const WEBDAV_BASE = Config.NZBDAV_WEBDAV_URL.replace(/\/+$/, "");
 const UNSAFE_CHARS_RX = /[\\/:*?"<>|]+/g;
 
-// Headers to copy from upstream response
 const PASSTHROUGH_HEADERS = [
     "Content-Length",
     "Content-Range",
@@ -44,9 +44,6 @@ function safeDecodeURIComponent(s: string): string {
     }
 }
 
-/**
- * RFC 5987 compliant Content-Disposition with ASCII fallback and UTF-8 support
- */
 function buildContentDisposition(fileName: string): string {
     const asciiFallback = sanitizeFileName(fileName).replace(/"/g, "");
     const encodedUtf8 = encodeURIComponent(fileName);
@@ -66,7 +63,6 @@ function buildUpstreamHeaders(req: Request): Headers {
 
     if (range) {
         headers.set("Range", range);
-        // Prevent upstream compression which can break Range semantics
         headers.set("Accept-Encoding", "identity");
     }
     if (ifRange) headers.set("If-Range", ifRange);
@@ -82,20 +78,17 @@ function buildResponseHeaders(upstream: Response, fileName: string): Headers {
     const headers = new Headers();
     const upHeaders = upstream.headers;
 
-    // Copy critical streaming headers
     for (const header of PASSTHROUGH_HEADERS) {
         const value = upHeaders.get(header);
         if (value) headers.set(header, value);
     }
 
-    // CORS
     headers.set("Access-Control-Allow-Origin", "*");
     headers.set(
         "Access-Control-Expose-Headers",
         "Content-Length, Content-Range, Content-Type, Accept-Ranges, ETag",
     );
 
-    // Content-Type - prefer upstream unless generic
     const upstreamType = upHeaders.get("Content-Type");
     headers.set(
         "Content-Type",
@@ -117,6 +110,17 @@ async function cancelBody(body: ReadableStream<Uint8Array> | null): Promise<void
     }
 }
 
+function extractFileName(targetUrl: string, hint: string): string {
+    if (hint) return hint;
+    try {
+        // Use URL to safely strip query parameters if they exist
+        const urlObj = new URL(targetUrl);
+        return urlObj.pathname.split("/").pop() || "stream";
+    } catch {
+        return targetUrl.split("/").pop()?.split("?")[0] || "stream";
+    }
+}
+
 export async function proxyNzbdavStream(
     req: Request,
     viewPath: string,
@@ -128,6 +132,7 @@ export async function proxyNzbdavStream(
     }
 
     const targetUrl = buildTargetUrl(viewPath);
+    const hasRange = req.headers.has("Range");
 
     try {
         const upstream = await fetch(targetUrl, {
@@ -135,19 +140,9 @@ export async function proxyNzbdavStream(
             headers: buildUpstreamHeaders(req),
             client: httpClient,
             redirect: "follow",
-            signal: req.signal,
+            signal: req.signal, // This handles cascade aborts natively
         });
 
-        // Handle early client abort
-        if (req.signal.aborted) {
-            await cancelBody(upstream.body);
-            throw req.signal.reason;
-        }
-
-        // Cancel upstream on client disconnect
-        req.signal.addEventListener("abort", () => cancelBody(upstream.body), { once: true });
-
-        // Handle upstream errors
         if (!upstream.ok) {
             await cancelBody(upstream.body);
 
@@ -160,12 +155,18 @@ export async function proxyNzbdavStream(
             }
 
             const errorReason = `Upstream Error: ${upstream.status} ${upstream.statusText}`;
-            const failureVid = await streamFailureVideo(req, errorReason);
-            return failureVid ?? new Response(errorReason, { status: upstream.status });
+
+            // If the user requested a specific byte range, sending a failure video from 
+            // byte 0 will corrupt playback. Only send failure video on fresh requests.
+            if (!hasRange) {
+                const failureVid = await streamFailureVideo(req, errorReason);
+                if (failureVid) return failureVid;
+            }
+
+            return new Response(errorReason, { status: upstream.status });
         }
 
-        // Build response
-        const rawName = fileNameHint || targetUrl.split("/").pop() || "stream";
+        const rawName = extractFileName(targetUrl, fileNameHint);
         const decodedName = safeDecodeURIComponent(rawName);
         const resHeaders = buildResponseHeaders(upstream, decodedName);
 
@@ -174,11 +175,13 @@ export async function proxyNzbdavStream(
             return new Response(null, { status: upstream.status, headers: resHeaders });
         }
 
+        // Deno will automatically link `upstream.body` to this Response.
+        // If the client disconnects, Deno handles canceling `upstream.body` instantly.
         return new Response(upstream.body, { status: upstream.status, headers: resHeaders });
+
     } catch (e: unknown) {
         const message = e instanceof Error ? e.message : String(e);
 
-        // Client abort - don't waste resources on failure video
         if (req.signal.aborted) {
             if (inFileSystem) {
                 console.warn(`[NZBDAV] Client aborted: ${viewPath}`);
@@ -191,7 +194,12 @@ export async function proxyNzbdavStream(
         }
 
         const errorReason = `Network Error: ${message}`;
-        const failureVid = await streamFailureVideo(req, errorReason);
-        return failureVid ?? new Response(errorReason, { status: 502 });
+
+        if (!hasRange) {
+            const failureVid = await streamFailureVideo(req, errorReason);
+            if (failureVid) return failureVid;
+        }
+
+        return new Response(errorReason, { status: 502 });
     }
 }
