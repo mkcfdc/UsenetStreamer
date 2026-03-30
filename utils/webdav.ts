@@ -1,5 +1,9 @@
 import { Config } from "../env.ts";
 
+// ═══════════════════════════════════════════════════════════════════
+// Types & Configuration
+// ═══════════════════════════════════════════════════════════════════
+
 export type WebdavEntry = {
     name: string;
     href: string;
@@ -14,7 +18,6 @@ export type WebdavClient = {
 };
 
 const AUTH_HEADER = "Basic " + btoa(`${Config.NZBDAV_WEBDAV_USER}:${Config.NZBDAV_WEBDAV_PASS}`);
-
 const REMOTE_BASE = Config.NZBDAV_WEBDAV_URL.replace(/\/+$/, "");
 const ROOT_PATH = (Config.NZBDAV_WEBDAV_ROOT || "").replace(/(^\/+|\/+$)/g, "");
 const REMOTE_ROOT_URL = ROOT_PATH ? `${REMOTE_BASE}/${ROOT_PATH}` : REMOTE_BASE;
@@ -29,23 +32,36 @@ const PROPFIND_BODY = `<?xml version="1.0" encoding="utf-8" ?>
   </D:prop>
 </D:propfind>`;
 
-// Reusable headers object - avoid recreating on every request
 const PROPFIND_HEADERS = {
     "Authorization": AUTH_HEADER,
     "Depth": "1",
     "Content-Type": "application/xml",
 } as const;
 
-// Case-insensitive pattern for collection detection
-const COLLECTION_PATTERN = /<[dD]:collection\s*\/>/;
+// ═══════════════════════════════════════════════════════════════════
+// Pre-Compiled Regexes (MASSIVE Performance Boost)
+// ═══════════════════════════════════════════════════════════════════
 
-let client: WebdavClient | null = null;
+const RX_RESPONSE_BLOCK = /<([dD]:)?response[\s>][\s\S]*?<\/([dD]:)?response>/gi;
+const RX_COLLECTION = /<[dD]:collection\s*\/>/i;
+const RX_HREF = /<[dD]:href>([^<]*)<\//i;
+const RX_LEN = /<[dD]:getcontentlength>([^<]*)<\//i;
+const RX_TYPE = /<[dD]:getcontenttype>([^<]*)<\//i;
+const RX_MOD = /<[dD]:getlastmodified>([^<]*)<\//i;
+
+// ═══════════════════════════════════════════════════════════════════
+// Deno Client
+// ═══════════════════════════════════════════════════════════════════
 
 const httpClient = Deno.createHttpClient({
     poolIdleTimeout: 60_000,
     poolMaxIdlePerHost: 50,
-    http2: true,
+    http2: false,
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// Fast Utility Functions
+// ═══════════════════════════════════════════════════════════════════
 
 function safeDecodeURIComponent(s: string): string {
     try {
@@ -55,25 +71,14 @@ function safeDecodeURIComponent(s: string): string {
     }
 }
 
-function extractTagValue(xml: string, tagName: string): string | null {
-    // Matches both D: and d: prefixes
-    const pattern = new RegExp(`<[dD]:${tagName}>([^<]*)<`, "i");
-    const match = pattern.exec(xml);
-    return match?.[1] ?? null;
-}
-
-function parseSize(sizeStr: string | null): number | null {
-    if (!sizeStr) return null;
-    const n = parseInt(sizeStr, 10);
-    return Number.isFinite(n) ? n : null;
-}
-
 function extractNameFromHref(href: string): string {
     const decodedHref = safeDecodeURIComponent(href);
-    const trimmed = decodedHref.endsWith("/")
-        ? decodedHref.slice(0, -1)
-        : decodedHref;
-    return trimmed.split("/").pop() || "";
+    const trimmed = decodedHref.endsWith("/") ? decodedHref.slice(0, -1) : decodedHref;
+
+    // Performance: string.slice + lastIndexOf is O(N) and uses no arrays.
+    // Far faster than trimmed.split("/").pop()
+    const lastSlash = trimmed.lastIndexOf("/");
+    return lastSlash === -1 ? trimmed : trimmed.slice(lastSlash + 1);
 }
 
 function isSelfEntry(href: string, targetPathEncoded: string): boolean {
@@ -86,105 +91,90 @@ function isSelfEntry(href: string, targetPathEncoded: string): boolean {
     return sepIdx < 0 || hrefTrimmed[sepIdx] === "/";
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// Parsers
+// ═══════════════════════════════════════════════════════════════════
+
 function parseResponseBlock(block: string, targetPathEncoded: string): WebdavEntry | null {
-    // Skip non-200 responses
+    // String.includes is native and extremely fast.
     if (!block.includes("200 OK") && !block.includes(" 200 ")) return null;
 
-    const href = extractTagValue(block, "href");
-    if (!href) return null;
+    const hrefMatch = RX_HREF.exec(block);
+    if (!hrefMatch) return null;
 
-    // Skip self-referential entries
+    const href = hrefMatch[1];
     if (isSelfEntry(href, targetPathEncoded)) return null;
 
-    const isDirectory = COLLECTION_PATTERN.test(block);
-    const decodedHref = safeDecodeURIComponent(href);
+    const isDirectory = RX_COLLECTION.test(block);
+    const sizeStr = isDirectory ? null : RX_LEN.exec(block)?.[1];
+
+    let size: number | null = null;
+    if (sizeStr) {
+        const parsedSize = parseInt(sizeStr, 10);
+        if (Number.isFinite(parsedSize)) size = parsedSize;
+    }
 
     return {
         name: extractNameFromHref(href),
-        href: decodedHref,
+        href: safeDecodeURIComponent(href),
         isDirectory,
-        size: isDirectory ? null : parseSize(extractTagValue(block, "getcontentlength")),
-        type: extractTagValue(block, "getcontenttype"),
-        lastModified: extractTagValue(block, "getlastmodified"),
+        size,
+        type: RX_TYPE.exec(block)?.[1] ?? null,
+        lastModified: RX_MOD.exec(block)?.[1] ?? null,
     };
 }
 
 function parseWebdavXml(xml: string, targetPathEncoded: string): WebdavEntry[] {
     const entries: WebdavEntry[] = [];
-    const xmlLen = xml.length;
-    let pos = 0;
+    let match;
 
-    while (pos < xmlLen) {
-        const startIdx = xml.indexOf("response>", pos);
-        if (startIdx === -1) break;
-
-        const openTag = xml.lastIndexOf("<", startIdx);
-        if (openTag === -1) {
-            pos = startIdx + 9;
-            continue;
-        }
-
-        const gt = xml.indexOf(">", openTag);
-        if (gt === -1) break;
-
-        const tagName = xml.substring(openTag + 1, gt).trim();
-        const closeTag = `</${tagName}>`;
-
-        const endIdx = xml.indexOf(closeTag, gt);
-        if (endIdx === -1) {
-            pos = gt + 1;
-            continue;
-        }
-
-        pos = endIdx + closeTag.length;
-
-        const block = xml.substring(openTag, endIdx);
-        const entry = parseResponseBlock(block, targetPathEncoded);
+    // Fast global execution natively inside V8, replacing the brittle indexOf loops
+    while ((match = RX_RESPONSE_BLOCK.exec(xml)) !== null) {
+        const entry = parseResponseBlock(match[0], targetPathEncoded);
         if (entry) entries.push(entry);
     }
 
     return entries;
 }
 
-export function getWebdavClient(): WebdavClient {
-    if (client) return client;
+// ═══════════════════════════════════════════════════════════════════
+// Client & Exports
+// ═══════════════════════════════════════════════════════════════════
 
-    client = {
-        getDirectoryContents: async (directory: string): Promise<WebdavEntry[]> => {
-            const cleanPath = directory.replace(/(^\/+|\/+$)/g, "");
-            const url = cleanPath ? `${REMOTE_ROOT_URL}/${cleanPath}` : REMOTE_ROOT_URL;
+export const webdavClient: WebdavClient = {
+    getDirectoryContents: async (directory: string): Promise<WebdavEntry[]> => {
+        const cleanPath = directory.replace(/(^\/+|\/+$)/g, "");
+        const url = cleanPath ? `${REMOTE_ROOT_URL}/${cleanPath}` : REMOTE_ROOT_URL;
 
-            const targetPathEncoded = cleanPath
-                ? cleanPath.split("/").map(encodeURIComponent).join("/")
-                : "";
+        const targetPathEncoded = cleanPath
+            ? cleanPath.split("/").map(encodeURIComponent).join("/")
+            : "";
 
-            const res = await fetch(url, {
-                method: "PROPFIND",
-                client: httpClient,
-                headers: PROPFIND_HEADERS,
-                body: PROPFIND_BODY,
-            });
+        const res = await fetch(url, {
+            method: "PROPFIND",
+            client: httpClient,
+            headers: PROPFIND_HEADERS,
+            body: PROPFIND_BODY,
+        });
 
-            if (res.status !== 207) {
-                // Read limited response body for error context
-                let errorDetail = "";
-                try {
-                    const text = await res.text();
-                    errorDetail = text.length > 200 ? text.slice(0, 200) : text;
-                } catch {
-                    // ignore read errors
-                }
-                throw new Error(
-                    `WebDAV PROPFIND failed: ${res.status} ${res.statusText} - ${errorDetail}`,
-                );
+        if (res.status !== 207) {
+            let errorDetail = "";
+            try {
+                const text = await res.text();
+                errorDetail = text.length > 200 ? text.slice(0, 200) : text;
+            } catch {
+                // ignore
             }
+            throw new Error(`WebDAV PROPFIND failed: ${res.status} ${res.statusText} - ${errorDetail}`);
+        }
 
-            const xml = await res.text();
-            return parseWebdavXml(xml, targetPathEncoded);
-        },
-    };
+        const xml = await res.text();
+        return parseWebdavXml(xml, targetPathEncoded);
+    },
+};
 
-    return client;
+export function getWebdavClient(): WebdavClient {
+    return webdavClient;
 }
 
 export function normalizeNzbdavPath(path: string): string {
