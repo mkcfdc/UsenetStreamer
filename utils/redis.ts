@@ -1,231 +1,267 @@
 import { Redis } from "ioredis";
 import { Config } from "../env.ts";
+import {
+    ACQUIRE_LOCK_SCRIPT,
+    RELEASE_LOCK_SCRIPT,
+    REMOVE_SEARCH_RESULT_SCRIPT,
+    STREAM_STATUS_SCRIPT,
+} from "../lib/redisScripts.ts";
 
-// ═══════════════════════════════════════════════════════════════════
-// Constants & Initialization
-// ═══════════════════════════════════════════════════════════════════
+const LOG = "%c[Redis]%c";
+const LABEL = "color: #ff6b6b; font-weight: bold;";
+const OK = "color: #51cf66;";
+const WARN = "color: #fcc419;";
+const ERR = "color: #ff922b;";
 
-const LOG_PREFIX = "%c[Redis]%c";
-const STYLE_LABEL = "color: #ff6b6b; font-weight: bold;";
-const STYLE_OK = "color: #51cf66;";
-const STYLE_WARN = "color: #fcc419;";
-const STYLE_ERR = "color: #ff922b;";
+type JsonMode = "NX" | "XX";
 
-export const redis = new Redis(Config.REDIS_URL, {
-    enableReadyCheck: true,
-    maxRetriesPerRequest: 3,
-    retryStrategy: (times) => Math.min(times * 50, 2000),
-    enableOfflineQueue: true,
+export interface StreamStatus {
+    status?: string;
+    failureMessage?: string;
+    nzoId?: string;
+    viewPath?: string;
+    fileName?: string;
+}
+
+interface RedisWithScripts extends Redis {
+    acquireLockPx(key: string, token: string, ttlMs: number): Promise<[number, number]>;
+    releaseLockToken(key: string, token: string): Promise<number>;
+    removeSearchResult(key: string, downloadUrl: string): Promise<number>;
+    streamStatus(key: string): Promise<string[] | null>;
+}
+
+let client: RedisWithScripts | null = null;
+let connectingUrl: string | null = null;
+
+function attachScripts(r: Redis): RedisWithScripts {
+    r.defineCommand("acquireLockPx", { numberOfKeys: 1, lua: ACQUIRE_LOCK_SCRIPT });
+    r.defineCommand("releaseLockToken", { numberOfKeys: 1, lua: RELEASE_LOCK_SCRIPT });
+    r.defineCommand("removeSearchResult", { numberOfKeys: 1, lua: REMOVE_SEARCH_RESULT_SCRIPT });
+    r.defineCommand("streamStatus", { numberOfKeys: 1, lua: STREAM_STATUS_SCRIPT });
+    return r as RedisWithScripts;
+}
+
+function createClient(url: string): RedisWithScripts {
+    const r = attachScripts(new Redis(url, {
+        enableReadyCheck: true,
+        maxRetriesPerRequest: 2,
+        enableOfflineQueue: false,
+        lazyConnect: false,
+        retryStrategy: (times) => Math.min(times * 100, 2000),
+    }));
+
+    r.on("error", (err) => console.error(LOG, LABEL, ERR, `Error: ${err.message}`));
+    r.on("connect", () => console.log(LOG, LABEL, OK, "Connected"));
+    r.on("ready", () => console.log(LOG, LABEL, OK, "Ready"));
+    r.on("reconnecting", () => console.log(LOG, LABEL, WARN, "Reconnecting..."));
+    r.on("close", () => console.warn(LOG, LABEL, WARN, "Connection closed"));
+
+    return r;
+}
+
+/** Live client. Recreates itself if REDIS_URL changes after a config save. */
+export function getRedis(): RedisWithScripts {
+    const url = Config.REDIS_URL;
+    if (client && connectingUrl === url) return client;
+
+    if (client) {
+        client.disconnect();
+        client = null;
+    }
+
+    connectingUrl = url;
+    client = createClient(url);
+    return client;
+}
+
+/** Back-compat singleton used by existing call sites. */
+export const redis: RedisWithScripts = new Proxy({} as RedisWithScripts, {
+    get(_target, prop, receiver) {
+        const live = getRedis() as unknown as Record<PropertyKey, unknown>;
+        const value = Reflect.get(live, prop, receiver);
+        return typeof value === "function" ? value.bind(live) : value;
+    },
 });
 
-redis
-    .on("error", (err) => console.error(LOG_PREFIX, STYLE_LABEL, STYLE_ERR, `Error: ${err.message}`))
-    .on("connect", () => console.log(LOG_PREFIX, STYLE_LABEL, STYLE_OK, "Connected"))
-    .on("ready", () => console.log(LOG_PREFIX, STYLE_LABEL, STYLE_OK, "Ready"))
-    .on("reconnecting", () => console.log(LOG_PREFIX, STYLE_LABEL, STYLE_WARN, "Reconnecting..."))
-    .on("close", () => console.warn(LOG_PREFIX, STYLE_LABEL, STYLE_WARN, "Connection closed"));
-
-// ═══════════════════════════════════════════════════════════════════
-// Core Operations
-// ═══════════════════════════════════════════════════════════════════
-
-/**
- * Sets a JSON value with optional expiration.
- * Bypasses pipeline overhead when TTL is not required.
- */
-export async function setJsonValue<T>(
-    key: string,
-    path: string,
-    data: T,
-    expirationSeconds?: number,
-    mode?: "NX" | "XX",
-): Promise<boolean> {
-    const args: (string | number)[] = [key, path, JSON.stringify(data)];
-    if (mode) args.push(mode);
-
+export function parseRedisJson<T>(raw: unknown): T | undefined {
+    if (raw == null) return undefined;
     try {
-        if (expirationSeconds && expirationSeconds > 0) {
-            // Pipeline only when we genuinely need to chain commands
-            const pipeline = redis.pipeline();
-            pipeline.call("JSON.SET", ...args);
-            pipeline.expire(key, expirationSeconds);
-            const results = await pipeline.exec();
-            return results?.[0]?.[1] === "OK";
-        } else {
-            // Fast-path direct execution
-            const result = await redis.call("JSON.SET", ...args);
-            return result === "OK";
-        }
-    } catch (err: any) {
-        console.error(LOG_PREFIX, STYLE_LABEL, STYLE_ERR, `SET ${key}: ${err.message}`);
-        return false;
-    }
-}
-
-/**
- * Sets JSON value without waiting - fire and forget.
- */
-export function setJsonValueAsync<T>(
-    key: string,
-    path: string,
-    data: T,
-    expirationSeconds?: number,
-): void {
-    const jsonStr = JSON.stringify(data);
-
-    if (expirationSeconds && expirationSeconds > 0) {
-        const pipeline = redis.pipeline();
-        pipeline.call("JSON.SET", key, path, jsonStr);
-        pipeline.expire(key, expirationSeconds);
-        pipeline.exec().catch(() => { });
-    } else {
-        // Fast-path fire-and-forget
-        redis.call("JSON.SET", key, path, jsonStr).catch(() => { });
-    }
-}
-
-/**
- * Gets and parses a JSON value. Returns undefined on miss for easier nullish coalescing.
- */
-export async function getJsonValue<T>(
-    key: string,
-    path = "$",
-): Promise<T | undefined> {
-    try {
-        const result = await redis.call("JSON.GET", key, path) as string | null;
-        if (!result) return undefined;
-
-        const parsed = JSON.parse(result);
-        return Array.isArray(parsed) ? parsed[0] : parsed;
+        const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+        if (Array.isArray(parsed)) return (parsed[0] ?? undefined) as T | undefined;
+        return parsed as T;
     } catch {
         return undefined;
     }
 }
 
-/**
- * Batch get multiple JSON keys in ONE single round-trip.
- * Uses native JSON.MGET, significantly faster than pipelining JSON.GET.
- */
-export async function getJsonValues<T>(
-    keys: string[],
-    path = "$",
-): Promise<(T | undefined)[]> {
-    if (keys.length === 0) return [];
-
-    try {
-        // JSON.MGET format: JSON.MGET key1 key2 ... keyN path
-        const args = [...keys, path];
-        const results = await redis.call("JSON.MGET", ...args) as (string | null)[];
-
-        if (!results) return new Array(keys.length).fill(undefined);
-
-        return results.map((result) => {
-            if (!result) return undefined;
-            try {
-                const parsed = JSON.parse(result);
-                return Array.isArray(parsed) ? parsed[0] : parsed;
-            } catch {
-                return undefined;
-            }
-        });
-    } catch {
-        return new Array(keys.length).fill(undefined);
-    }
-}
-
-/**
- * Batch set multiple JSON key-value pairs in one round-trip.
- */
-export async function setJsonValues<T>(
-    entries: Array<{ key: string; data: T; ttl?: number }>,
-    path = "$",
-): Promise<boolean[]> {
-    if (entries.length === 0) return [];
-
-    const pipeline = redis.pipeline();
-
-    for (let i = 0; i < entries.length; i++) {
-        const { key, data, ttl } = entries[i];
-        pipeline.call("JSON.SET", key, path, JSON.stringify(data));
-        if (ttl && ttl > 0) pipeline.expire(key, ttl);
-    }
-
-    try {
-        const results = await pipeline.exec();
-        if (!results) return entries.map(() => false);
-
-        const out: boolean[] = [];
-        let resultIdx = 0;
-
-        for (let i = 0; i < entries.length; i++) {
-            out.push(results[resultIdx]?.[1] === "OK");
-            // Advance pointer by 2 if TTL was added, else 1
-            resultIdx += (entries[i].ttl && entries[i].ttl! > 0) ? 2 : 1;
-        }
-        return out;
-    } catch {
-        return entries.map(() => false);
-    }
-}
-
-/**
- * Deletes a specific path within a JSON document.
- */
-export function deleteJsonPath(key: string, path: string): Promise<number> {
-    return redis.call("JSON.DEL", key, path).then(
-        (result) => Number(result),
-        () => 0
-    );
-}
-
-/**
- * Check if a key exists.
- */
-export function exists(key: string): Promise<boolean> {
-    return redis.exists(key).then((r) => r === 1);
-}
-
-/**
- * Check multiple keys exist in one round-trip.
- */
-export function existsMany(keys: string[]): Promise<number> {
-    if (keys.length === 0) return Promise.resolve(0);
-    // Passing the array directly bypasses V8's call stack limits 
-    // that would occur if you used '...keys' on an array > 65k items.
-    return redis.exists(keys);
-}
-
-/**
- * Set with safe distributed lock pattern.
- * Requires a unique token (e.g. UUID) to prevent accidentally releasing someone else's lock.
- */
-export function acquireLock(
+export async function setJsonValue<T>(
     key: string,
-    ttlSeconds: number,
-    token: string
+    path: string,
+    data: T,
+    expirationSeconds?: number,
+    mode?: JsonMode,
 ): Promise<boolean> {
-    return redis.set(key, token, "EX", ttlSeconds, "NX").then((r) => r === "OK");
+    const payload = JSON.stringify(data);
+    const r = getRedis();
+
+    try {
+        if (expirationSeconds && expirationSeconds > 0) {
+            const args: (string | number)[] = [key, path, payload];
+            if (mode) args.push(mode);
+            args.push("EX", expirationSeconds);
+            try {
+                return (await r.call("JSON.SET", ...args)) === "OK";
+            } catch {
+                const pipe = r.pipeline();
+                const setArgs: (string | number)[] = [key, path, payload];
+                if (mode) setArgs.push(mode);
+                pipe.call("JSON.SET", ...setArgs);
+                pipe.expire(key, expirationSeconds);
+                const results = await pipe.exec();
+                return results?.[0]?.[1] === "OK";
+            }
+        }
+
+        const args: (string | number)[] = [key, path, payload];
+        if (mode) args.push(mode);
+        return (await r.call("JSON.SET", ...args)) === "OK";
+    } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(LOG, LABEL, ERR, `SET ${key}: ${message}`);
+        return false;
+    }
 }
 
-/**
- * Safe lock release via atomic Lua Script. 
- * Only releases if the lock is still owned by the provided token.
- */
-export function releaseLock(key: string, token: string): Promise<boolean> {
-    const script = `
-        if redis.call("get", KEYS[1]) == ARGV[1] then
-            return redis.call("del", KEYS[1])
-        else
-            return 0
-        end
-    `;
-    return redis.eval(script, 1, key, token).then((r) => r === 1);
+export function setJsonValueAsync<T>(
+    key: string,
+    path: string,
+    data: T,
+    expirationSeconds?: number,
+    mode?: JsonMode,
+): void {
+    setJsonValue(key, path, data, expirationSeconds, mode).catch(() => {});
 }
 
-/**
- * Graceful shutdown.
- */
+export async function getJsonValue<T>(key: string, path = "$"): Promise<T | undefined> {
+    try {
+        const raw = await getRedis().call("JSON.GET", key, path);
+        return parseRedisJson<T>(raw);
+    } catch {
+        return undefined;
+    }
+}
+
+export async function getJsonValues<T>(keys: string[], path = "$"): Promise<(T | undefined)[]> {
+    if (keys.length === 0) return [];
+    try {
+        const results = await getRedis().call("JSON.MGET", ...keys, path) as (string | null)[] | null;
+        if (!results) return keys.map(() => undefined);
+        return results.map((item) => parseRedisJson<T>(item));
+    } catch {
+        return keys.map(() => undefined);
+    }
+}
+
+/** Merge fields into an existing document without wiping sibling keys. */
+export async function mergeJson<T extends Record<string, unknown>>(
+    key: string,
+    data: T,
+    expirationSeconds?: number,
+): Promise<boolean> {
+    const r = getRedis();
+    const payload = JSON.stringify(data);
+    try {
+        const merged = await r.call("JSON.MERGE", key, "$", payload);
+        if (expirationSeconds && expirationSeconds > 0) {
+            await r.expire(key, expirationSeconds);
+        }
+        return merged === "OK";
+    } catch {
+        try {
+            const pipe = r.pipeline();
+            for (const [field, value] of Object.entries(data)) {
+                pipe.call("JSON.SET", key, `$.${field}`, JSON.stringify(value));
+            }
+            if (expirationSeconds && expirationSeconds > 0) {
+                pipe.expire(key, expirationSeconds);
+            }
+            await pipe.exec();
+            return true;
+        } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            console.error(LOG, LABEL, ERR, `MERGE ${key}: ${message}`);
+            return false;
+        }
+    }
+}
+
+export async function deleteKey(...keyList: string[]): Promise<number> {
+    if (keyList.length === 0) return 0;
+    try {
+        return await getRedis().del(...keyList);
+    } catch {
+        return 0;
+    }
+}
+
+export function exists(key: string): Promise<boolean> {
+    return getRedis().exists(key).then((n) => n === 1).catch(() => false);
+}
+
+export async function acquireLock(key: string, ttlMs: number, token: string): Promise<boolean> {
+    try {
+        const res = await getRedis().acquireLockPx(key, token, ttlMs);
+        return Array.isArray(res) ? res[0] === 1 : false;
+    } catch {
+        const ok = await getRedis().set(key, token, "PX", ttlMs, "NX");
+        return ok === "OK";
+    }
+}
+
+export async function releaseLock(key: string, token: string): Promise<boolean> {
+    try {
+        return (await getRedis().releaseLockToken(key, token)) === 1;
+    } catch {
+        return false;
+    }
+}
+
+export async function getStreamStatus(key: string): Promise<StreamStatus | null> {
+    try {
+        const res = await getRedis().streamStatus(key);
+        if (!Array.isArray(res) || res.length === 0) return null;
+        return {
+            status: res[0] || undefined,
+            failureMessage: res[1] || undefined,
+            nzoId: res[2] || undefined,
+            viewPath: res[3] || undefined,
+            fileName: res[4] || undefined,
+        };
+    } catch {
+        return getJsonValue<StreamStatus>(key) ?? null;
+    }
+}
+
+export async function removeSearchHit(searchKey: string, downloadUrl: string): Promise<void> {
+    try {
+        await getRedis().removeSearchResult(searchKey, downloadUrl);
+    } catch {
+        // ignore
+    }
+}
+
+export async function pingRedis(): Promise<boolean> {
+    try {
+        return (await getRedis().ping()) === "PONG";
+    } catch {
+        return false;
+    }
+}
+
 export async function closeRedis(): Promise<void> {
-    await redis.quit();
-    console.log(LOG_PREFIX, STYLE_LABEL, STYLE_OK, "Disconnected gracefully");
+    if (!client) return;
+    await client.quit();
+    client = null;
+    connectingUrl = null;
+    console.log(LOG, LABEL, OK, "Disconnected gracefully");
 }
