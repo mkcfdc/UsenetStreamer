@@ -1,9 +1,7 @@
 import { normalizeNzbdavPath, getWebdavClient } from "./webdav.ts";
 import { Config } from "../env.ts";
-
-// ═══════════════════════════════════════════════════════════════════
-// Interfaces & Configuration
-// ═══════════════════════════════════════════════════════════════════
+import { keys, WEBDAV_TTL_SEC } from "./cacheKeys.ts";
+import { getJsonValue, setJsonValue } from "./redis.ts";
 
 export interface FileCandidate {
     name: string;
@@ -26,54 +24,65 @@ export interface FindFileParams {
     allowPartial?: boolean;
 }
 
-const PUBLIC_BASE_URL = Config.NZBDAV_URL
-    .replace(/\/sabnzbd\/?$/, "")
-    .replace(/\/$/, "");
+function publicBaseUrl(): string {
+    return Config.NZBDAV_URL.replace(/\/sabnzbd\/?$/, "").replace(/\/$/, "");
+}
 
-// Performance: Sets are vastly faster than Regex for known strict matches
+function webdavCacheKey(params: FindFileParams): string {
+    return keys.webdav(
+        params.category,
+        params.jobName,
+        params.requestedEpisode?.season,
+        params.requestedEpisode?.episode,
+        params.allowPartial,
+    );
+}
+
 const VIDEO_EXTS = new Set([
     "mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", "m4v", "ts", "m2ts", "mpg", "mpeg"
 ]);
 
 const SAMPLE_WORD_RX = /(^|[.\s_\-()[\]])sample([.\s_\-()[\]]|$)/i;
 const MAX_CONCURRENT_REQUESTS = 5;
+const SAMPLE_MIN_BYTES_PARTIAL = 8_000_000;
+const SAMPLE_MIN_BYTES_FULL = 52_428_800;
+const PROGRESSIVE_GOOD_ENOUGH_BYTES = 25_000_000;
 
-const SAMPLE_MIN_BYTES_PARTIAL = 8_000_000;  // 8 MB
-const SAMPLE_MIN_BYTES_FULL = 52_428_800;    // ~50 MB
-const PROGRESSIVE_GOOD_ENOUGH_BYTES = 25_000_000; // 25 MB
-
-// Helper to pre-compile episode regex
 function getEpisodeRegex(requestedEpisode?: EpisodeInfo): RegExp | null {
-    if (!requestedEpisode?.season || !requestedEpisode?.episode) return null;
+    if (requestedEpisode?.season == null || requestedEpisode?.episode == null) return null;
     return new RegExp(
         `(?:s0*${requestedEpisode.season}[. ]?e0*${requestedEpisode.episode}|0*${requestedEpisode.season}x0*${requestedEpisode.episode})(?![0-9])`,
         "i",
     );
 }
 
-// ═══════════════════════════════════════════════════════════════════
-// Public Entry
-// ═══════════════════════════════════════════════════════════════════
-
 export async function findBestVideoFile(
     params: FindFileParams,
 ): Promise<FileCandidate | null> {
+    const cacheKey = webdavCacheKey(params);
+    const cached = await getJsonValue<FileCandidate>(cacheKey);
+    if (cached?.viewPath) return cached;
+
+    let found: FileCandidate | null = null;
+
     if (Config.USE_STRM_FILES) {
-        const strm = await findStrmCandidate(params);
-        if (strm) return strm;
+        found = await findStrmCandidate(params);
     }
 
-    try {
-        return await findWebdavCandidate(params);
-    } catch (e: any) {
-        if (e?.status === 404 || e?.message?.includes?.("404")) return null;
-        throw e;
+    if (!found) {
+        try {
+            found = await findWebdavCandidate(params);
+        } catch (e: any) {
+            if (e?.status === 404 || e?.message?.includes?.("404")) found = null;
+            else throw e;
+        }
     }
+
+    if (found?.viewPath) {
+        setJsonValue(cacheKey, "$", found, WEBDAV_TTL_SEC).catch(() => {});
+    }
+    return found;
 }
-
-// ═══════════════════════════════════════════════════════════════════
-// STRM Optimization
-// ═══════════════════════════════════════════════════════════════════
 
 async function findStrmCandidate(
     { category, jobName, requestedEpisode }: FindFileParams,
@@ -81,39 +90,27 @@ async function findStrmCandidate(
     const safeJobName = jobName.replace(/^\/|\/$/g, "");
     const strmDir = `/strm/content/${category}/${safeJobName}`;
     const episodeRegex = getEpisodeRegex(requestedEpisode);
-
     let bestGeneric: FileCandidate | null = null;
 
     try {
-        // Optimized: Streams files natively and stops reading IO as soon as exact match is found
         for await (const entry of Deno.readDir(strmDir)) {
             if (!entry.isFile || !entry.name.endsWith(".strm")) continue;
-
             const matchesEpisode = episodeRegex ? episodeRegex.test(entry.name) : true;
-
-            // If we already have a generic, don't read another generic from disk
             if (!matchesEpisode && bestGeneric) continue;
-
             try {
                 const content = await Deno.readTextFile(`${strmDir}/${entry.name}`);
                 if (!content) continue;
-
                 const url = new URL(content.trim());
                 const rawPath = url.searchParams.get("path") || url.pathname.replace("/webdav", "");
-
                 const candidate: FileCandidate = {
-                    viewPath: content.replace(/^https?:\/\/[^/]+/, PUBLIC_BASE_URL),
+                    viewPath: content.replace(/^https?:\/\/[^/]+/, publicBaseUrl()),
                     absolutePath: rawPath,
                     name: entry.name.slice(0, -5),
                     size: 0,
                     matchesEpisode,
                 };
-
-                if (matchesEpisode) {
-                    return candidate; // Early exit: exact episode found
-                } else {
-                    bestGeneric = candidate; // Save as fallback
-                }
+                if (matchesEpisode) return candidate;
+                bestGeneric = candidate;
             } catch {
                 continue;
             }
@@ -124,31 +121,21 @@ async function findStrmCandidate(
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════
-// WebDAV Optimization
-// ═══════════════════════════════════════════════════════════════════
-
 export async function findWebdavCandidate(
     { category, jobName, requestedEpisode, allowPartial }: FindFileParams,
 ): Promise<FileCandidate | null> {
     const client = getWebdavClient();
     const rootPath = normalizeNzbdavPath(`/content/${category}/${jobName}`).replace(/\/$/, "");
     const episodeRegex = getEpisodeRegex(requestedEpisode);
-
-    // BFS queue - using an index avoids $O(N) queue.shift() re-allocations
     const queue: Array<{ path: string; depth: number }> = [{ path: rootPath, depth: 0 }];
     let queueIdx = 0;
-
     const visited = new Set<string>();
     const processing = new Set<Promise<void>>();
-
     let done = false;
     let bestEpisode: FileCandidate | null = null;
     let bestGeneric: FileCandidate | null = null;
-
     const minSampleBytes = allowPartial ? SAMPLE_MIN_BYTES_PARTIAL : SAMPLE_MIN_BYTES_FULL;
 
-    // Optimized: Only run Regex if the file is smaller than threshold
     function isSampleLike(name: string, size: number): boolean {
         if (size >= minSampleBytes) return false;
         return SAMPLE_WORD_RX.test(name);
@@ -162,47 +149,34 @@ export async function findWebdavCandidate(
 
     const processDirectory = async (path: string, depth: number) => {
         if (done) return;
-
         const key = path.endsWith("/") ? path : `${path}/`;
         if (visited.has(key)) return;
         visited.add(key);
-
         const entries = await client.getDirectoryContents(path);
         if (done) return;
-
         const sep = path.endsWith("/") ? "" : "/";
-
         for (let i = 0; i < entries.length; i++) {
             if (done) return;
             const entry = entries[i];
-
             if (entry.isDirectory) {
                 if (depth < Config.NZBDAV_MAX_DIRECTORY_DEPTH) {
                     queue.push({ path: `${path}${sep}${entry.name}`, depth: depth + 1 });
                 }
                 continue;
             }
-
             const name = entry.name || "";
-
-            // Fast Extension Check via Set
             const dotIdx = name.lastIndexOf(".");
             if (dotIdx === -1) continue;
             const ext = name.slice(dotIdx + 1).toLowerCase();
             if (!VIDEO_EXTS.has(ext)) continue;
-
             const size = Number(entry.size) || 0;
             if (isSampleLike(name, size)) continue;
-
             const matchesEpisode = episodeRegex ? episodeRegex.test(name) : true;
-
-            // Prevent Object allocation / Garbage Collection if file is smaller than current best
             if (matchesEpisode) {
                 if (bestEpisode && size <= bestEpisode.size) continue;
-            } else {
-                if (bestGeneric && size <= bestGeneric.size) continue;
+            } else if (bestGeneric && size <= bestGeneric.size) {
+                continue;
             }
-
             const fullPath = `${path}${sep}${name}`;
             const candidate: FileCandidate = {
                 name,
@@ -211,40 +185,26 @@ export async function findWebdavCandidate(
                 absolutePath: fullPath,
                 viewPath: fullPath.startsWith("/") ? fullPath.slice(1) : fullPath,
             };
-
             if (matchesEpisode) bestEpisode = candidate;
             else bestGeneric = candidate;
-
-            // Early exit path for progressive mode (Bugfix applied)
             if (allowPartial) {
-                // If we specifically wanted an episode, only early-exit if bestEpisode is populated
                 const pick = episodeRegex ? bestEpisode : (bestEpisode || bestGeneric);
-                if (pick && pick.size >= PROGRESSIVE_GOOD_ENOUGH_BYTES) {
-                    done = true;
-                }
+                if (pick && pick.size >= PROGRESSIVE_GOOD_ENOUGH_BYTES) done = true;
             }
         }
     };
 
     while (!done && (queueIdx < queue.length || processing.size > 0)) {
-
-        // Spawn workers up to concurrency limit
         while (!done && queueIdx < queue.length) {
             const next = queue[queueIdx];
             if (processing.size >= maxConcurrencyForDepth(next.depth)) break;
-
-            queueIdx++; // O(1) advance
+            queueIdx++;
             const task = processDirectory(next.path, next.depth).finally(() => {
                 processing.delete(task);
             });
             processing.add(task);
         }
-
-        // Wait for at least one worker to finish before continuing
-        if (processing.size > 0) {
-            // Promise.race natively supports iterables like Set in V8
-            await Promise.race(processing);
-        }
+        if (processing.size > 0) await Promise.race(processing);
     }
 
     return bestEpisode || bestGeneric || null;
