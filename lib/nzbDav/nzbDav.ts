@@ -1,6 +1,15 @@
 // deno-lint-ignore-file no-explicit-any
 import { LRUCache as LRU } from "lru-cache";
-import { getJsonValue, redis, setJsonValue } from "../../utils/redis.ts";
+import {
+    acquireLock,
+    getJsonValue,
+    getRedis,
+    getStreamStatus,
+    mergeJson,
+    releaseLock,
+    removeSearchHit,
+} from "../../utils/redis.ts";
+import { FAILED_STREAM_TTL_SEC, keys, STREAM_TTL_SEC } from "../../utils/cacheKeys.ts";
 import { md5 } from "../../utils/md5Encoder.ts";
 import { findBestVideoFile } from "../../utils/findBestVideoFile.ts";
 import { streamFailureVideo } from "../streamFailureVideo.ts";
@@ -13,21 +22,13 @@ import { buildNzbdavApiParams, getNzbdavCategory, sleep } from "./nzbUtils.ts";
 import { updateNzbStatus } from "../nzbcheck.ts";
 import { fetcher } from "../../utils/fetcher.ts";
 import { Config } from "../../env.ts";
-import {
-    ACQUIRE_LOCK_SCRIPT,
-    FAST_FAIL_SCRIPT,
-    REMOVE_PROWLARR_SCRIPT,
-} from "../redisScripts.ts";
+import { invalidateSearchCache } from "../../utils/getMediaAndSearchResults.ts";
 import type { StreamCache, StreamResult } from "./types.ts";
-
-// --- Configuration & Constants ---
 
 const CACHE_CONFIG = {
     NZBDAV: { max: Config.NZBDAV_CACHE_MAX_ITEMS, ttl: Config.NZBDAV_CACHE_TTL_MS },
     META: { max: Config.STREAM_METADATA_CACHE_MAX_ITEMS, ttl: Config.STREAM_METADATA_CACHE_TTL_MS },
 };
-
-const FAILURE_TTL_SECONDS = 300;
 
 const POLLING = {
     INITIAL_WAIT: 50,
@@ -36,8 +37,6 @@ const POLLING = {
     PARTIAL_FILE_TIMEOUT: 20_000,
     DISTRIBUTED_TIMEOUT: 15_000,
 };
-
-// --- Logging ---
 
 const now = performance.now.bind(performance);
 const dur = (start: number) => (performance.now() - start).toFixed(0);
@@ -48,8 +47,6 @@ const log = (scope: string, msg: string, ...args: any[]) =>
 
 const error = (scope: string, msg: string, err?: any) =>
     console.error(`[${timestamp()}] [${scope}] ERROR: ${msg}`, err instanceof Error ? err.message : err);
-
-// --- Errors ---
 
 class NzbdavError extends Error {
     readonly isNzbdavFailure = true;
@@ -63,103 +60,11 @@ class NzbdavError extends Error {
     }
 }
 
-// --- Caches ---
-
 const nzbdavStreamCache = new LRU<string, Promise<StreamResult> | StreamResult>(CACHE_CONFIG.NZBDAV);
 const streamMetadataCache = new LRU<string, StreamCache>(CACHE_CONFIG.META);
-const scriptShas: Record<string, string> = {};
 
 const isPromise = <T>(v: T | Promise<T>): v is Promise<T> =>
     v !== null && typeof v === "object" && typeof (v as any).then === "function";
-
-redis.on("ready", async () => {
-    try {
-        const [lock, fail, prowlarr] = await Promise.all([
-            (redis as any).script("LOAD", ACQUIRE_LOCK_SCRIPT),
-            (redis as any).script("LOAD", FAST_FAIL_SCRIPT),
-            (redis as any).script("LOAD", REMOVE_PROWLARR_SCRIPT),
-        ]);
-        Object.assign(scriptShas, { acquireLock: lock, fastFail: fail, removeProwlarr: prowlarr });
-        log("Redis", "Lua scripts loaded");
-    } catch (err) {
-        console.warn("[Redis] Script preload failed:", err);
-    }
-});
-
-// --- Redis Helpers ---
-
-async function runScript(name: string, script: string, numKeys: number, ...args: any[]): Promise<any> {
-    const r = redis as any;
-    let sha = scriptShas[name];
-
-    if (sha) {
-        try {
-            return await r.evalsha(sha, numKeys, ...args);
-        } catch (e: any) {
-            if (!e?.message?.includes("NOSCRIPT")) throw e;
-        }
-    }
-
-    sha = scriptShas[name] = await r.script("LOAD", script);
-    return r.evalsha(sha, numKeys, ...args);
-}
-
-async function acquireLock(key: string, ttl: number): Promise<boolean> {
-    const val = Date.now().toString();
-    try {
-        const res = await runScript("acquireLock", ACQUIRE_LOCK_SCRIPT, 1, key, val, ttl);
-        return res[0] === 1;
-    } catch {
-        return (await (redis as any).set(key, val, "PX", ttl, "NX")) === "OK";
-    }
-}
-
-const releaseLock = (key: string) => redis.del(key).catch(() => { });
-
-interface FastFailResult {
-    status?: string;
-    failureMessage?: string;
-    nzoId?: string;
-    viewPath?: string;
-    fileName?: string;
-}
-
-async function getFastFailStatus(key: string): Promise<FastFailResult | null> {
-    try {
-        const res = await runScript("fastFail", FAST_FAIL_SCRIPT, 1, key);
-        if (!Array.isArray(res) || !res.length) return null;
-        return {
-            status: res[0] || undefined,
-            failureMessage: res[1] || undefined,
-            nzoId: res[2] || undefined,
-            viewPath: res[3] || undefined,
-            fileName: res[4] || undefined,
-        };
-    } catch {
-        return null;
-    }
-}
-
-async function getStreamStatus(cacheKey: string): Promise<FastFailResult | null> {
-    const ff = await getFastFailStatus(cacheKey);
-    if (ff?.status === "failed" || ff?.viewPath) return ff;
-
-    try {
-        const raw = await getJsonValue<any>(cacheKey);
-        if (!raw) return ff;
-        return {
-            status: raw.status,
-            failureMessage: raw.failureMessage,
-            nzoId: raw.nzoId,
-            viewPath: raw.viewPath,
-            fileName: raw.fileName,
-        };
-    } catch {
-        return ff;
-    }
-}
-
-// --- API ---
 
 export async function fetchNzbdav<T = any>(
     mode: string,
@@ -186,11 +91,9 @@ export async function fetchNzbdav<T = any>(
     }
 }
 
-// --- Polling Helper (Used strictly for filesystem monitoring) ---
-
 async function poll<T>(
     fn: () => Promise<T | undefined>,
-    opts: { timeout: number; initialWait?: number; maxWait?: number; signal?: AbortSignal }
+    opts: { timeout: number; initialWait?: number; maxWait?: number; signal?: AbortSignal },
 ): Promise<T> {
     const { timeout, initialWait = POLLING.INITIAL_WAIT, maxWait = POLLING.MAX_WAIT, signal } = opts;
     const deadline = Date.now() + timeout;
@@ -205,8 +108,6 @@ async function poll<T>(
     }
     throw new Error(`Poll timeout after ${timeout}ms`);
 }
-
-// --- Core Logic ---
 
 async function addNzbToNzbdav(nzbUrl: string, category: string, jobName: string): Promise<string> {
     if (!nzbUrl) throw new Error("Missing NZB URL");
@@ -239,7 +140,7 @@ async function monitorNzbdavJob(nzoId: string, category: string, cacheKey: strin
                 const status = (raw.status || "").toLowerCase();
                 if (status === "completed" || status === "success") {
                     log("Monitor", `Job ${nzoId} completed`);
-                    await setJsonValue(cacheKey, "$.status", "ready").catch(() => { });
+                    await mergeJson(cacheKey, { status: "ready" }, STREAM_TTL_SEC);
                     return;
                 }
                 if (status === "failed" || status === "error") {
@@ -247,7 +148,7 @@ async function monitorNzbdavJob(nzoId: string, category: string, cacheKey: strin
                         `Job failed: ${raw.fail_message || raw.failMessage || "Unknown"}`,
                         raw.fail_message || raw.failMessage || "Unknown error",
                         nzoId,
-                        category
+                        category,
                     );
                 }
             }
@@ -257,16 +158,12 @@ async function monitorNzbdavJob(nzoId: string, category: string, cacheKey: strin
         log("Monitor", `Job ${nzoId} timed out`);
     } catch (err: any) {
         error("Monitor", `Failed for ${nzoId}`, err);
-        try {
-            await redis.pipeline()
-                .call("JSON.SET", cacheKey, "$.status", JSON.stringify("failed"))
-                .call("JSON.SET", cacheKey, "$.failureMessage", JSON.stringify(err.failureMessage || err.message))
-                .call("JSON.SET", cacheKey, "$.nzoId", JSON.stringify(err.nzoId || nzoId))
-                .exec();
-            log("Monitor", `Marked ${cacheKey} as failed`);
-        } catch (e) {
-            error("Monitor", `Failed to write error state`, e);
-        }
+        await mergeJson(cacheKey, {
+            status: "failed",
+            failureMessage: err.failureMessage || err.message,
+            nzoId: err.nzoId || nzoId,
+        }).catch((e) => error("Monitor", "Failed to write error state", e));
+        log("Monitor", `Marked ${cacheKey} as failed`);
     }
 }
 
@@ -274,30 +171,38 @@ async function waitForPartialVideoFile(
     cacheKey: string,
     category: string,
     jobName: string,
-    episode?: EpisodeInfo
+    episode?: EpisodeInfo,
 ): Promise<{ viewPath: string; name: string }> {
     const tStart = now();
     log("Wait", `Waiting for media file. Job: ${jobName}`);
 
-    const result = await poll(async () => {
+    return await poll(async () => {
         const status = await getStreamStatus(cacheKey);
 
         if (status?.status === "failed") {
-            throw new NzbdavError(`Job failed: ${status.failureMessage}`, status.failureMessage || "Job failed", status.nzoId, category);
+            throw new NzbdavError(
+                `Job failed: ${status.failureMessage}`,
+                status.failureMessage || "Job failed",
+                status.nzoId,
+                category,
+            );
         }
         if (status?.viewPath) {
             log("Wait", `Found in Redis after ${dur(tStart)}ms`);
             return { viewPath: status.viewPath, name: status.fileName || "video.mkv" };
         }
 
-        const file = await findBestVideoFile({ category, jobName, requestedEpisode: episode, allowPartial: true } as any);
+        const file = await findBestVideoFile({
+            category,
+            jobName,
+            requestedEpisode: episode,
+            allowPartial: true,
+        } as any);
         if (file?.viewPath) {
             log("Wait", `Found on FS after ${dur(tStart)}ms`);
             return { viewPath: file.viewPath, name: file.name };
         }
     }, { timeout: POLLING.PARTIAL_FILE_TIMEOUT });
-
-    return result;
 }
 
 interface BuildParams {
@@ -321,13 +226,12 @@ async function buildStream(params: BuildParams): Promise<StreamResult> {
     const proxyUrl = `${Config.ADDON_BASE_URL}/nzb/proxy/${urlHash}.nzb`;
     const nzoId = await addNzbToNzbdav(proxyUrl, category, jobName);
 
-    setJsonValue(cacheKey, "$", { status: "pending", nzoId, category, jobName, title, downloadUrl })
-        .catch(e => error(scope, "Failed to write pending state", e));
+    mergeJson(cacheKey, { status: "pending", nzoId, category, jobName, title, downloadUrl })
+        .catch((e) => error(scope, "Failed to write pending state", e));
 
     monitorNzbdavJob(nzoId, category, cacheKey);
 
     const partial = await waitForPartialVideoFile(cacheKey, category, jobName, episode);
-
     log(scope, `Stream ready. Build time: ${dur(t0)}ms`);
 
     const result: StreamResult = {
@@ -341,25 +245,38 @@ async function buildStream(params: BuildParams): Promise<StreamResult> {
         indexer,
         title,
         inFileSystem: true,
-        status: "ready"
+        status: "ready",
     };
 
-    setJsonValue(cacheKey, "$", result)
-        .catch(e => error(scope, "Failed to write ready state", e));
+    mergeJson(cacheKey, { ...result }, STREAM_TTL_SEC)
+        .catch((e) => error(scope, "Failed to write ready state", e));
 
     return result;
 }
 
-// Pub/Sub distributed wait gives true 0-ms latency for shared stream tracking
+function toReadyResult(
+    status: { viewPath?: string; fileName?: string },
+    category: string,
+    jobName: string,
+): StreamResult {
+    return {
+        viewPath: status.viewPath!,
+        fileName: status.fileName || "video.mkv",
+        status: "ready",
+        category,
+        jobName,
+        inFileSystem: true,
+    };
+}
+
 async function waitForDistributedStream(
     streamCacheKey: string,
     category: string,
-    signal?: AbortSignal
+    signal?: AbortSignal,
 ): Promise<StreamResult> {
     log("Wait", `Distributed Pub/Sub wait for ${streamCacheKey}`);
 
-    // Create a dedicated Redis subscriber client (assumes ioredis/similar standard interface)
-    const pubsubClient = (redis as any).duplicate();
+    const pubsubClient = getRedis().duplicate();
 
     return new Promise<StreamResult>((resolve, reject) => {
         let isDone = false;
@@ -383,48 +300,39 @@ async function waitForDistributedStream(
             }, { once: true });
         }
 
-        const channel = `channel:stream:${streamCacheKey}`;
+        const channel = keys.streamChannel(streamCacheKey);
 
         pubsubClient.subscribe(channel).then(async () => {
             if (isDone) return;
 
-            // Race Condition Check: Re-check in case the publisher finished *right* before we subscribed
             const status = await getStreamStatus(streamCacheKey);
             if (status?.status === "failed") {
                 cleanup();
-                return reject(new NzbdavError("Job failed (detected in wait)", status.failureMessage!, status.nzoId, category));
-            } else if (status?.viewPath) {
-                cleanup();
-                return resolve({
-                    viewPath: status.viewPath,
-                    fileName: status.fileName || "video.mkv",
-                    status: "ready",
+                return reject(new NzbdavError(
+                    "Job failed (detected in wait)",
+                    status.failureMessage || "Job failed",
+                    status.nzoId,
                     category,
-                    jobName: "Waited Stream",
-                    inFileSystem: true
-                });
+                ));
+            }
+            if (status?.viewPath) {
+                cleanup();
+                return resolve(toReadyResult(status, category, "Waited Stream"));
             }
         }).catch((err: any) => {
             cleanup();
             reject(err);
         });
 
-        pubsubClient.on("message", async (msgChannel: string, _message: string) => {
+        pubsubClient.on("message", async (msgChannel: string) => {
             if (msgChannel !== channel) return;
             cleanup();
 
             const status = await getStreamStatus(streamCacheKey);
             if (status?.status === "failed") {
-                reject(new NzbdavError("Job failed", status.failureMessage!, status.nzoId, category));
+                reject(new NzbdavError("Job failed", status.failureMessage || "Job failed", status.nzoId, category));
             } else if (status?.viewPath) {
-                resolve({
-                    viewPath: status.viewPath,
-                    fileName: status.fileName || "video.mkv",
-                    status: "ready",
-                    category,
-                    jobName: "Waited Stream",
-                    inFileSystem: true
-                });
+                resolve(toReadyResult(status, category, "Waited Stream"));
             } else {
                 reject(new Error("Stream build finished but no valid path found"));
             }
@@ -432,46 +340,49 @@ async function waitForDistributedStream(
     });
 }
 
-// --- Main Handler ---
-
 export async function streamNzbdavProxy(keyHash: string, req: Request): Promise<Response> {
     const tTotal = now();
     const scope = `Req:${keyHash.slice(0, 6)}`;
-    const redisKey = `streams:${keyHash}`;
+    const redis = getRedis();
+    const redisKey = keys.stream(keyHash);
 
     let meta = streamMetadataCache.get(redisKey);
     if (!meta) {
         meta = await getJsonValue<StreamCache>(redisKey);
         if (!meta) {
             log(scope, `Stream metadata expired/missing`);
-            return await streamFailureVideo(req) || new Response(JSON.stringify({ error: "Stream expired" }), { status: 502 });
+            return await streamFailureVideo(req) ||
+                new Response(JSON.stringify({ error: "Stream expired" }), { status: 502 });
         }
         streamMetadataCache.set(redisKey, meta);
     }
 
-    const { downloadUrl, type = "movie", title = "NZB Stream", prowlarrId, guid, indexer, rawImdbId: id } = meta;
+    const { downloadUrl, type = "movie", title = "NZB Stream", guid, indexer, rawImdbId: id, searchKey } = meta;
     const urlHash = md5(downloadUrl);
-    const streamCacheKey = `streams:${urlHash}`;
-    const failedKey = `failed:${urlHash}`;
-    const lockKey = `lock:stream:${urlHash}`;
+    const streamCacheKey = keys.stream(urlHash);
+    const failedKey = keys.streamFailed(urlHash);
+    const lockKey = keys.streamLock(urlHash);
     const category = getNzbdavCategory(type);
     const isAlt = Config.NZBDAV_URL.includes("altmount");
     const jobName = isAlt ? urlHash : title;
     const episode = parseRequestedEpisode(type, id ?? "");
 
     try {
-        // FAST PATH 1: Memory Cache (0ms Network Penalty)
         let cachedItem = nzbdavStreamCache.get(streamCacheKey);
 
         if (cachedItem && !isPromise(cachedItem)) {
             log(scope, `Memory hit! Total: ${dur(tTotal)}ms`);
-            return await proxyNzbdavStream(req, cachedItem.viewPath, cachedItem.fileName || "video.mkv", cachedItem.inFileSystem);
+            return await proxyNzbdavStream(
+                req,
+                cachedItem.viewPath,
+                cachedItem.fileName || "video.mkv",
+                cachedItem.inFileSystem,
+            );
         }
 
-        // FAST PATH 2: Parallelized Redis Network Checks (Saves 10-20ms of TTFB)
         const [knownFailure, fastFail] = await Promise.all([
             redis.get(failedKey),
-            getFastFailStatus(streamCacheKey)
+            getStreamStatus(streamCacheKey),
         ]);
 
         if (knownFailure) {
@@ -479,35 +390,37 @@ export async function streamNzbdavProxy(keyHash: string, req: Request): Promise<
             throw new NzbdavError("Job failed previously", knownFailure as string, undefined, category);
         }
 
-        // Join in-flight builds dynamically without re-polling
         if (cachedItem && isPromise(cachedItem)) {
             log(scope, `Joining in-flight build...`);
             cachedItem = await cachedItem;
             log(scope, `Memory hit (resolved)! Total: ${dur(tTotal)}ms`);
-            return await proxyNzbdavStream(req, cachedItem.viewPath, cachedItem.fileName || "video.mkv", cachedItem.inFileSystem);
+            return await proxyNzbdavStream(
+                req,
+                cachedItem.viewPath,
+                cachedItem.fileName || "video.mkv",
+                cachedItem.inFileSystem,
+            );
         }
 
         if (fastFail?.status === "failed") {
-            throw new NzbdavError("Job failed previously", fastFail.failureMessage || "Failed", fastFail.nzoId, category);
+            throw new NzbdavError(
+                "Job failed previously",
+                fastFail.failureMessage || "Failed",
+                fastFail.nzoId,
+                category,
+            );
         }
 
         if (fastFail?.viewPath) {
-            const result: StreamResult = {
-                viewPath: fastFail.viewPath,
-                fileName: fastFail.fileName || "video.mkv",
-                status: "ready",
-                category,
-                jobName,
-                inFileSystem: true
-            };
+            const result = toReadyResult(fastFail, category, jobName);
             nzbdavStreamCache.set(streamCacheKey, result);
             log(scope, `Redis hit! Total: ${dur(tTotal)}ms`);
             return await proxyNzbdavStream(req, result.viewPath, result.fileName, true);
         }
 
-        // COLD PATH: Build it
         const streamPromise = (async (): Promise<StreamResult> => {
-            const hasLock = await acquireLock(lockKey, POLLING.LOCK_TIMEOUT);
+            const lockToken = crypto.randomUUID();
+            const hasLock = await acquireLock(lockKey, POLLING.LOCK_TIMEOUT, lockToken);
 
             if (!hasLock) {
                 log(scope, `Lock busy, waiting via Pub/Sub...`);
@@ -517,7 +430,6 @@ export async function streamNzbdavProxy(keyHash: string, req: Request): Promise<
             const tLock = now();
             log(scope, `Lock acquired. Building...`);
             try {
-                // Re-check failure inside lock barrier
                 const recheck = await redis.get(failedKey);
                 if (recheck) {
                     throw new NzbdavError("Job failed", recheck as string, undefined, category);
@@ -531,9 +443,9 @@ export async function streamNzbdavProxy(keyHash: string, req: Request): Promise<
                         status: "ready",
                         category,
                         jobName,
-                        inFileSystem: !Config.USE_STRM_FILES
+                        inFileSystem: !Config.USE_STRM_FILES,
                     };
-                    setJsonValue(streamCacheKey, "$", result).catch(() => { });
+                    mergeJson(streamCacheKey, { ...result }, STREAM_TTL_SEC).catch(() => {});
                     return result;
                 }
 
@@ -546,12 +458,11 @@ export async function streamNzbdavProxy(keyHash: string, req: Request): Promise<
                     jobName,
                     episode,
                     indexer,
-                    fileId: guid
+                    fileId: guid,
                 });
             } finally {
-                releaseLock(lockKey);
-                // Announce completion to waiting users natively via Pub/Sub
-                redis.publish(`channel:stream:${streamCacheKey}`, "done").catch(() => { });
+                await releaseLock(lockKey, lockToken);
+                redis.publish(keys.streamChannel(streamCacheKey), "done").catch(() => {});
                 log(scope, `Lock released. Build: ${dur(tLock)}ms`);
             }
         })();
@@ -567,9 +478,7 @@ export async function streamNzbdavProxy(keyHash: string, req: Request): Promise<
             nzbdavStreamCache.delete(streamCacheKey);
             throw err;
         }
-
     } catch (err: any) {
-        // ENHANCEMENT: Early exit for client disconnects prevents database corruption
         if (req.signal.aborted || err.name === "AbortError" || (err instanceof DOMException && err.name === "AbortError")) {
             log(scope, `Client closed request mid-stream`);
             return new Response(null, { status: 499 });
@@ -578,26 +487,28 @@ export async function streamNzbdavProxy(keyHash: string, req: Request): Promise<
         error(scope, `Stream Error`, err);
 
         if (err.isNzbdavFailure || err.message?.includes("failed")) {
-            redis.setex(failedKey, FAILURE_TTL_SECONDS, err.failureMessage || err.message).catch(() => { });
-
-            const pipeline = redis.pipeline();
-            pipeline.del(redisKey);
-
-            if (prowlarrId && downloadUrl) {
-                const sKey = `search:${id}`;
-                pipeline.eval(REMOVE_PROWLARR_SCRIPT, 1, sKey, downloadUrl);
+            redis.setex(failedKey, FAILED_STREAM_TTL_SEC, err.failureMessage || err.message).catch(() => {});
+            if (searchKey && downloadUrl) {
+                removeSearchHit(searchKey, downloadUrl).catch(() => {});
+                invalidateSearchCache(searchKey);
+            } else if (id && downloadUrl) {
+                const fallbackKey = keys.search(id);
+                removeSearchHit(fallbackKey, downloadUrl).catch(() => {});
+                invalidateSearchCache(fallbackKey);
             }
 
-            pipeline.exec().catch(e => error(scope, "Pipeline execution failed", e));
-
             if (indexer && guid) {
-                updateNzbStatus({ source_indexer: indexer, file_id: guid }, false, err.failureMessage || err.message).catch(() => { });
+                updateNzbStatus(
+                    { source_indexer: indexer, file_id: guid },
+                    false,
+                    err.failureMessage || err.message,
+                ).catch(() => {});
             }
         }
 
-        return await streamFailureVideo(req, err) || new Response(JSON.stringify({ error: err.failureMessage || err.message }), {
-            status: 502,
-            headers: { "Content-Type": "application/json" },
-        });
+        return await streamFailureVideo(req, err) || new Response(
+            JSON.stringify({ error: err.failureMessage || err.message }),
+            { status: 502, headers: { "Content-Type": "application/json" } },
+        );
     }
 }
