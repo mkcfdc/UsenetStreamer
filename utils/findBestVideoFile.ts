@@ -1,6 +1,6 @@
 import { normalizeNzbdavPath, getWebdavClient } from "./webdav.ts";
 import { Config } from "../env.ts";
-import { keys, WEBDAV_TTL_SEC } from "./cacheKeys.ts";
+import { keys, WEBDAV_MISS_TTL_SEC, WEBDAV_TTL_SEC } from "./cacheKeys.ts";
 import { getJsonValue, setJsonValue } from "./redis.ts";
 
 export interface FileCandidate {
@@ -60,7 +60,8 @@ export async function findBestVideoFile(
     params: FindFileParams,
 ): Promise<FileCandidate | null> {
     const cacheKey = webdavCacheKey(params);
-    const cached = await getJsonValue<FileCandidate>(cacheKey);
+    const cached = await getJsonValue<FileCandidate & { pending?: boolean }>(cacheKey);
+    if (cached?.pending) return null;
     if (cached?.viewPath) return cached;
 
     let found: FileCandidate | null = null;
@@ -80,6 +81,8 @@ export async function findBestVideoFile(
 
     if (found?.viewPath) {
         setJsonValue(cacheKey, "$", found, WEBDAV_TTL_SEC).catch(() => {});
+    } else {
+        setJsonValue(cacheKey, "$", { pending: true }, WEBDAV_MISS_TTL_SEC).catch(() => {});
     }
     return found;
 }
