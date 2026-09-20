@@ -1,7 +1,7 @@
 import { fetcher } from "../utils/fetcher.ts";
 import { Config } from "../env.ts";
-
-// --- Types ---
+import { keys, NZBCHECK_TTL_SEC } from "../utils/cacheKeys.ts";
+import { getJsonValues, setJsonValue } from "../utils/redis.ts";
 
 export interface NzbCheckItem {
     source_indexer: string;
@@ -23,8 +23,6 @@ interface NzbStatusResponse {
     success: boolean;
 }
 
-// --- Constants ---
-
 const EMPTY_RESPONSE: NzbCheckResponse = { success: false, data: {} };
 const FAILED_STATUS: NzbStatusResponse = { success: false };
 
@@ -34,43 +32,65 @@ const API_HEADERS = Config.NZB_CHECK_API_KEY
 
 const isConfigured = Boolean(Config.NZB_CHECK_URL && Config.NZB_CHECK_API_KEY);
 
-// Log once at startup instead of per-request
 if (!isConfigured) {
     console.warn("[NzbCheck] URL or API Key not configured - checks disabled");
 }
-
-// --- Helpers ---
 
 function buildUrl(path: string): string {
     return `${Config.NZB_CHECK_URL}${path}`;
 }
 
-// --- Exports ---
-
-/**
- * Batch check NZB completion status
- */
 export async function checkNzb(items: NzbCheckItem[]): Promise<NzbCheckResponse> {
     if (!isConfigured || items.length === 0) {
         return EMPTY_RESPONSE;
     }
 
+    const cacheKeys = items.map((item) => keys.nzbcheck(item.source_indexer, item.file_id));
+    const cached = await getJsonValues<NzbCheckStatus>(cacheKeys);
+
+    const data: Record<string, NzbCheckStatus> = {};
+    const missing: NzbCheckItem[] = [];
+
+    for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        const hit = cached[i];
+        const id = `${item.source_indexer.toLowerCase()}:${item.file_id}`;
+        if (hit) {
+            data[id] = { ...hit, cache_hit: true };
+        } else {
+            missing.push(item);
+        }
+    }
+
+    if (missing.length === 0) {
+        return { success: true, data };
+    }
+
     try {
-        return await fetcher<NzbCheckResponse>(buildUrl("/status/search"), {
+        const remote = await fetcher<NzbCheckResponse>(buildUrl("/status/search"), {
             method: "POST",
             headers: API_HEADERS,
-            body: { items },
+            body: { items: missing },
             timeoutMs: 10000,
         });
+
+        const remoteData = remote?.data ?? {};
+        for (const item of missing) {
+            const id = `${item.source_indexer.toLowerCase()}:${item.file_id}`;
+            const status = remoteData[id];
+            if (!status) continue;
+            data[id] = status;
+            setJsonValue(keys.nzbcheck(item.source_indexer, item.file_id), "$", status, NZBCHECK_TTL_SEC)
+                .catch(() => {});
+        }
+
+        return { success: Boolean(remote?.success) || Object.keys(data).length > 0, data };
     } catch (err) {
         console.error("[NzbCheck] Batch check failed:", err instanceof Error ? err.message : err);
-        return EMPTY_RESPONSE;
+        return Object.keys(data).length ? { success: true, data } : EMPTY_RESPONSE;
     }
 }
 
-/**
- * Update single NZB completion status
- */
 export async function updateNzbStatus(
     item: NzbCheckItem,
     isComplete: boolean,
@@ -98,9 +118,6 @@ export async function updateNzbStatus(
     }
 }
 
-/**
- * Fire-and-forget status update - use when you don't need confirmation
- */
 export function updateNzbStatusAsync(
     item: NzbCheckItem,
     isComplete: boolean,
@@ -118,12 +135,9 @@ export function updateNzbStatusAsync(
             status_message: message,
         },
         timeoutMs: 5000,
-    }).catch(() => { }); // Swallow errors silently
+    }).catch(() => { });
 }
 
-/**
- * Batch update multiple statuses in parallel
- */
 export async function updateNzbStatusBatch(
     updates: Array<{
         item: NzbCheckItem;

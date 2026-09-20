@@ -6,6 +6,7 @@ export const FAILED_STREAM_TTL_SEC = 300;
 export const CINEMETA_TTL_SEC = 604_800; // 7 days
 export const SEARCH_TTL_SEC = 86_400; // 1 day
 export const SESSION_TTL_SEC = 86_400;
+export const NZBCHECK_TTL_SEC = 1_800; // 30 minutes
 
 export const keys = {
     stream: (hash: string) => `streams:${hash}`,
@@ -18,4 +19,5 @@ export const keys = {
         season && episode ? `search:${id}:${season}:${episode}` : `search:${id}`,
     searchLock: (searchKey: string) => `${searchKey}:lock`,
     session: (sessionId: string) => `session:${sessionId}`,
+    nzbcheck: (indexer: string, fileId: string) => `nzbcheck:${indexer}:${fileId}`,
 } as const;
