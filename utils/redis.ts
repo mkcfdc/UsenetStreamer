@@ -171,6 +171,9 @@ export async function mergeJson<T extends Record<string, unknown>>(
     const r = getRedis();
     const payload = JSON.stringify(data);
     try {
+        if (!(await r.exists(key))) {
+            return await setJsonValue(key, "$", data, expirationSeconds);
+        }
         const merged = await r.call("JSON.MERGE", key, "$", payload);
         if (expirationSeconds && expirationSeconds > 0) {
             await r.expire(key, expirationSeconds);
@@ -178,6 +181,9 @@ export async function mergeJson<T extends Record<string, unknown>>(
         return merged === "OK";
     } catch {
         try {
+            if (!(await r.exists(key))) {
+                return await setJsonValue(key, "$", data, expirationSeconds);
+            }
             const pipe = r.pipeline();
             for (const [field, value] of Object.entries(data)) {
                 pipe.call("JSON.SET", key, `$.${field}`, JSON.stringify(value));
