@@ -1,5 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { join } from "@std/path";
+import { SCHEMA_SQL, SQLITE_PRAGMAS } from "../shared/schema.ts";
+import { getCachedSetting, setCachedSetting } from "../shared/settingsCache.ts";
 
 let dbInstance: DatabaseSync | null = null;
 
@@ -28,43 +30,8 @@ function getDb(): DatabaseSync {
     console.log(`\n%c[Database] %cInitializing sqlite at: ${dbPath}`, "color: blue;", "color: green;");
 
     const db = new DatabaseSync(dbPath);
-    db.exec("PRAGMA journal_mode = WAL;");
-    db.exec("PRAGMA busy_timeout = 5000;");
-
-    db.exec(`
-    CREATE TABLE IF NOT EXISTS indexers (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
-      url TEXT NOT NULL,
-      api_key TEXT NOT NULL,
-      enabled INTEGER DEFAULT 1
-    ) STRICT
-  `);
-
-    db.exec(`
-    CREATE TABLE IF NOT EXISTS settings (
-      key TEXT PRIMARY KEY,
-      value TEXT,
-      description TEXT
-    ) STRICT;
-  `);
-
-    db.exec(`
-    CREATE TABLE IF NOT EXISTS nntp_servers (
-        id          INTEGER PRIMARY KEY AUTOINCREMENT,
-        name        TEXT NOT NULL UNIQUE,
-        host        TEXT NOT NULL,
-        port        INTEGER NOT NULL,
-        username    TEXT,
-        password    TEXT,
-        ssl         INTEGER NOT NULL DEFAULT 1,
-        connection_count   INTEGER NOT NULL DEFAULT 4,
-        priority    INTEGER NOT NULL DEFAULT 0,
-        active      INTEGER NOT NULL DEFAULT 1,
-        created_at  TEXT NOT NULL DEFAULT (STRFTIME('%Y-%m-%d %H:%M:%S', 'now')),
-        updated_at  TEXT NOT NULL DEFAULT (STRFTIME('%Y-%m-%d %H:%M:%S', 'now'))
-    ) STRICT;
-  `);
+    db.exec(SQLITE_PRAGMAS);
+    db.exec(SCHEMA_SQL);
 
     dbInstance = db;
     return db;
@@ -87,10 +54,14 @@ export function getOrSetSetting(key: string, defaultValue: string, description: 
         return envVal;
     }
 
+    const cached = getCachedSetting(key);
+    if (cached !== undefined) return cached;
+
     const db = getDb();
     const row = db.prepare("SELECT value FROM settings WHERE key = ?").get(key) as { value: string } | undefined;
 
     if (row) {
+        setCachedSetting(key, row.value);
         return row.value;
     }
 
@@ -101,12 +72,14 @@ export function getOrSetSetting(key: string, defaultValue: string, description: 
         // Ignore race conditions (SQLITE_CONSTRAINT)
     }
 
+    setCachedSetting(key, defaultValue);
     return defaultValue;
 }
 
 export function updateSetting(key: string, value: string) {
     const db = getDb();
     db.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(key, value);
+    setCachedSetting(key, value);
 }
 
 export interface Indexer {
