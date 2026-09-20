@@ -49,24 +49,27 @@ return 1
 
 /** Pull the handful of fields the stream hot-path needs. */
 export const STREAM_STATUS_SCRIPT = `
-local raw = redis.call('JSON.GET', KEYS[1], '$.status', '$.failureMessage', '$.nzoId', '$.viewPath', '$.fileName')
+local raw = redis.call('JSON.GET', KEYS[1], '$')
 if not raw then return nil end
 
-local doc = cjson.decode(raw)
-local function first(path)
-    local node = doc[path]
-    if type(node) == 'table' and node[1] ~= nil then
-        return node[1]
-    end
-    return ''
+local decoded = cjson.decode(raw)
+local doc = decoded
+if type(decoded) == 'table' and decoded[1] ~= nil and type(decoded[1]) == 'table' then
+    doc = decoded[1]
+end
+if type(doc) ~= 'table' then return nil end
+
+local function s(v)
+    if v == nil or v == cjson.null then return '' end
+    return tostring(v)
 end
 
 return {
-    first('$.status'),
-    first('$.failureMessage'),
-    first('$.nzoId'),
-    first('$.viewPath'),
-    first('$.fileName')
+    s(doc.status),
+    s(doc.failureMessage),
+    s(doc.nzoId),
+    s(doc.viewPath),
+    s(doc.fileName)
 }
 `;
 
@@ -74,4 +77,4 @@ return {
 export const FAST_FAIL_SCRIPT = STREAM_STATUS_SCRIPT;
 
 /** @deprecated Use REMOVE_SEARCH_RESULT_SCRIPT */
-export const REMOVE_PROWLARR_SCRIPT = REMOVE_SEARCH_RESULT_SCRIPT;
+export const REMOVE_PROWLARR_SCRIPT = REMOVE_PROWLARR_SCRIPT;

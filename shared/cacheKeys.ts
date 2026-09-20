@@ -18,12 +18,12 @@ export const keys = {
     streamChannel: (cacheKey: string) => `channel:stream:${cacheKey}`,
     cinemeta: (type: string, id: string) => `cinemeta:${type}:${id}`,
     search: (id: string, season?: number, episode?: number) =>
-        season && episode ? `search:${id}:${season}:${episode}` : `search:${id}`,
+        season != null && episode != null ? `search:${id}:${season}:${episode}` : `search:${id}`,
     searchLock: (searchKey: string) => `${searchKey}:lock`,
     session: (sessionId: string) => `session:${sessionId}`,
     nzbcheck: (indexer: string, fileId: string) => `nzbcheck:${indexer}:${fileId}`,
     webdav: (category: string, jobName: string, season?: number, episode?: number, partial?: boolean) => {
-        const ep = season && episode ? `:${season}:${episode}` : "";
+        const ep = season != null && episode != null ? `:${season}:${episode}` : "";
         return `webdav:${category}:${jobName}${ep}${partial ? ":partial" : ""}`;
     },
 } as const;
