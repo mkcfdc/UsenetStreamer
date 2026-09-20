@@ -2,7 +2,7 @@ import { getCinemetaData } from "../lib/cinemeta.ts";
 import { searchHydra } from "../lib/nzbhydra.ts";
 import { searchProwlarr } from "../lib/prowlarr.ts";
 import { searchDirect } from "../lib/nzbnab.ts";
-import { Config } from "../env.ts";
+import { Config, searchProvider } from "../env.ts";
 import { LRUCache } from "lru-cache";
 import { CINEMETA_TTL_SEC, keys, SEARCH_TTL_SEC } from "./cacheKeys.ts";
 import {
@@ -53,13 +53,6 @@ interface RawSearchResult {
 const CINEMETA_LOCK_SEC = 20;
 const SEARCH_LOCK_SEC = 25;
 const PROTOCOL_USENET = "usenet";
-
-const PROVIDER: "hydra" | "prowlarr" | "direct" =
-    (Config.NZBHYDRA_URL && Config.NZBHYDRA_API_KEY)
-        ? "hydra"
-        : (Config.PROWLARR_URL && Config.PROWLARR_API_KEY)
-        ? "prowlarr"
-        : "direct";
 
 type CacheValue = CinemetaData | SearchResult[];
 
@@ -229,11 +222,12 @@ export async function getMediaAndSearchResults(
                 episode,
             };
 
-            if (PROVIDER === "prowlarr") {
+            const provider = searchProvider();
+            if (provider === "prowlarr") {
                 return searchProwlarr(opts) as Promise<SearchResult[]>;
             }
 
-            const raw = (PROVIDER === "hydra"
+            const raw = (provider === "hydra"
                 ? await searchHydra(opts)
                 : await searchDirect(opts)) as RawSearchResult[];
 
