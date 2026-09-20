@@ -166,23 +166,19 @@ export const streamRoute: RouteMatch = {
                 streams.push(streamObj);
 
                 const streamKey = keys.stream(hash);
-                setPipeline.call(
-                    "JSON.SET",
-                    streamKey,
-                    "$",
-                    JSON.stringify({
-                        downloadUrl: r.downloadUrl,
-                        title: r.title,
-                        size: r.size,
-                        guid: r.extractedGuid,
-                        indexer: r.indexer,
-                        type,
-                        fileName: r.fileName,
-                        rawImdbId: decoded,
-                        searchKey,
-                    }),
-                    "NX",
-                );
+                const meta = {
+                    downloadUrl: r.downloadUrl,
+                    title: r.title,
+                    size: r.size,
+                    guid: r.extractedGuid,
+                    indexer: r.indexer,
+                    type,
+                    fileName: r.fileName,
+                    rawImdbId: decoded,
+                    searchKey,
+                };
+                setPipeline.call("JSON.SET", streamKey, "$", JSON.stringify(meta), "NX");
+                setPipeline.call("JSON.MERGE", streamKey, "$", JSON.stringify({ searchKey, downloadUrl: r.downloadUrl, rawImdbId: decoded }));
                 setPipeline.expire(streamKey, STREAM_TTL_SEC);
             }
 
