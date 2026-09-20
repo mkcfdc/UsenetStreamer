@@ -47,8 +47,6 @@ export const Config = {
         return getOrSetSetting("OTEL_DENO", "false", "Enable OpenTelemetry") === "true";
     },
 
-    // --- NZBDAV Specifics ---
-
     get NZBDAV_URL() {
         return getOrSetSetting("NZBDAV_URL", "", "Base URL for NZB DAV").trim();
     },
@@ -131,16 +129,31 @@ export const Config = {
     ]),
 };
 
+export type SearchProvider = "hydra" | "prowlarr" | "direct";
+
+export function searchProvider(): SearchProvider {
+    if (Config.NZBHYDRA_URL && Config.NZBHYDRA_API_KEY) return "hydra";
+    if (Config.PROWLARR_URL && Config.PROWLARR_API_KEY) return "prowlarr";
+    return "direct";
+}
+
+export function nzbCheckEnabled(): boolean {
+    return Boolean(Config.NZB_CHECK_URL && Config.NZB_CHECK_API_KEY);
+}
+
 export function validateConfig(): string[] {
     const missing: string[] = [];
 
     if (!Config.ADDON_BASE_URL) missing.push("ADDON_BASE_URL");
     if (!Config.REDIS_URL) missing.push("REDIS_URL");
     if (!Config.ADDON_SHARED_SECRET) missing.push("ADDON_SHARED_SECRET");
-    if (!Config.NZBDAV_API_KEY) missing.push("NZBDAV_API_KEY");
-    if (!Config.NZBDAV_URL) missing.push("NZBDAV_URL");
-    if (!Config.NZBDAV_WEBDAV_PASS) missing.push("NZBDAV_WEBDAV_PASS");
-    if (!Config.NZBDAV_WEBDAV_USER) missing.push("NZBDAV_WEBDAV_USER");
+
+    if (!Config.USE_STREMIO_NNTP) {
+        if (!Config.NZBDAV_API_KEY) missing.push("NZBDAV_API_KEY");
+        if (!Config.NZBDAV_URL) missing.push("NZBDAV_URL");
+        if (!Config.NZBDAV_WEBDAV_PASS) missing.push("NZBDAV_WEBDAV_PASS");
+        if (!Config.NZBDAV_WEBDAV_USER) missing.push("NZBDAV_WEBDAV_USER");
+    }
 
     return missing;
 }
