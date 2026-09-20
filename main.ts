@@ -3,8 +3,9 @@ import "./utils/asciiArt.ts";
 import { Config, validateConfig } from "./env.ts";
 import { jsonResponse } from "./utils/responseUtils.ts";
 import { routes } from "./routes/index.ts";
+import { closeRedis } from "./utils/redis.ts";
+import { closeDb } from "./utils/sqlite.ts";
 
-// --- CORS HEADERS ---
 const CORS_HEADERS = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
@@ -12,7 +13,6 @@ const CORS_HEADERS = {
     "Access-Control-Max-Age": "86400",
 };
 
-// --- CORS OPTIONS HANDLER ---
 function handleCors(): Response {
     return new Response(null, {
         status: 204,
@@ -20,7 +20,6 @@ function handleCors(): Response {
     });
 }
 
-// --- ROOT HANDLER ---
 function handleRoot(): Response {
     return new Response(
         "Hello, the server is running! This is using the mkcfdc version of UsenetStreamer by Sanket9225.",
@@ -28,22 +27,18 @@ function handleRoot(): Response {
     );
 }
 
-// --- MAIN HANDLER ---
 async function handler(req: Request): Promise<Response> {
     const method = req.method;
     const url = new URL(req.url);
 
-    // --- GLOBAL CORS (OPTIONS) ---
     if (method === "OPTIONS") {
         return handleCors();
     }
 
-    // --- ROOT CHECK ---
     if (url.pathname === "/" && method === "GET") {
         return handleRoot();
     }
 
-    // --- ROUTE MATCHING ---
     for (const route of routes) {
         const match = route.pattern.exec(url);
         if (match && route.methods.includes(method)) {
@@ -56,11 +51,9 @@ async function handler(req: Request): Promise<Response> {
         }
     }
 
-    // --- 404 NOT FOUND ---
     return jsonResponse({ error: "Not found" }, 404);
 }
 
-// --- MAINTENANCE MODE HANDLER ---
 function maintenanceHandler(): Response {
     return new Response(
         `[System Maintenance] Configuration required.\nMissing: ${validateConfig().join(", ")}\nUse the manage cli tool!`,
@@ -68,7 +61,6 @@ function maintenanceHandler(): Response {
     );
 }
 
-// --- BOOTSTRAP ---
 const missingKeys = validateConfig();
 const port = Config.PORT;
 
@@ -86,3 +78,15 @@ if (missingKeys.length > 0) {
     );
     Deno.serve({ port }, handler);
 }
+
+async function shutdown() {
+    try { await closeRedis(); } catch { /* ignore */ }
+    try { closeDb(); } catch { /* ignore */ }
+}
+
+Deno.addSignalListener("SIGINT", () => {
+    shutdown().finally(() => Deno.exit(0));
+});
+Deno.addSignalListener("SIGTERM", () => {
+    shutdown().finally(() => Deno.exit(0));
+});

@@ -9,6 +9,7 @@ export interface StreamCache {
     nzbId?: string;
     type: "series" | "movie";
     rawImdbId?: string;
+    searchKey?: string;
     status?: "failed" | "ready" | "pending";
     failureMessage?: string;
     nzoId?: string;
