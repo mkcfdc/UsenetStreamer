@@ -4,6 +4,7 @@
     "manage": "deno run --allow-all cli/manage.ts"
   },
   "imports": {
+    "@shared/": "./shared/",
     "@ctrl/video-filename-parser": "npm:@ctrl/video-filename-parser@^5.4.1",
     "@std/cli": "jsr:@std/cli@^1.0.24",
     "@std/encoding": "jsr:@std/encoding@^1.0.10",
