@@ -1,5 +1,5 @@
 import { fetcher } from "../utils/fetcher.ts";
-import { Config } from "../env.ts";
+import { Config, nzbCheckEnabled } from "../env.ts";
 import { keys, NZBCHECK_TTL_SEC } from "../utils/cacheKeys.ts";
 import { getJsonValues, setJsonValue } from "../utils/redis.ts";
 
@@ -26,14 +26,9 @@ interface NzbStatusResponse {
 const EMPTY_RESPONSE: NzbCheckResponse = { success: false, data: {} };
 const FAILED_STATUS: NzbStatusResponse = { success: false };
 
-const API_HEADERS = Config.NZB_CHECK_API_KEY
-    ? { "X-API-KEY": Config.NZB_CHECK_API_KEY }
-    : undefined;
-
-const isConfigured = Boolean(Config.NZB_CHECK_URL && Config.NZB_CHECK_API_KEY);
-
-if (!isConfigured) {
-    console.warn("[NzbCheck] URL or API Key not configured - checks disabled");
+function apiHeaders(): Record<string, string> | undefined {
+    const key = Config.NZB_CHECK_API_KEY;
+    return key ? { "X-API-KEY": key } : undefined;
 }
 
 function buildUrl(path: string): string {
@@ -41,7 +36,7 @@ function buildUrl(path: string): string {
 }
 
 export async function checkNzb(items: NzbCheckItem[]): Promise<NzbCheckResponse> {
-    if (!isConfigured || items.length === 0) {
+    if (!nzbCheckEnabled() || items.length === 0) {
         return EMPTY_RESPONSE;
     }
 
@@ -69,7 +64,7 @@ export async function checkNzb(items: NzbCheckItem[]): Promise<NzbCheckResponse>
     try {
         const remote = await fetcher<NzbCheckResponse>(buildUrl("/status/search"), {
             method: "POST",
-            headers: API_HEADERS,
+            headers: apiHeaders(),
             body: { items: missing },
             timeoutMs: 10000,
         });
@@ -96,14 +91,14 @@ export async function updateNzbStatus(
     isComplete: boolean,
     message: string,
 ): Promise<NzbStatusResponse> {
-    if (!isConfigured) {
+    if (!nzbCheckEnabled()) {
         return FAILED_STATUS;
     }
 
     try {
         return await fetcher<NzbStatusResponse>(buildUrl("/status"), {
             method: "POST",
-            headers: API_HEADERS,
+            headers: apiHeaders(),
             body: {
                 file_id: item.file_id,
                 indexer: item.source_indexer,
@@ -123,11 +118,11 @@ export function updateNzbStatusAsync(
     isComplete: boolean,
     message: string,
 ): void {
-    if (!isConfigured) return;
+    if (!nzbCheckEnabled()) return;
 
     fetcher(buildUrl("/status"), {
         method: "POST",
-        headers: API_HEADERS,
+        headers: apiHeaders(),
         body: {
             file_id: item.file_id,
             indexer: item.source_indexer,
@@ -145,7 +140,7 @@ export async function updateNzbStatusBatch(
         message: string;
     }>,
 ): Promise<{ succeeded: number; failed: number }> {
-    if (!isConfigured || updates.length === 0) {
+    if (!nzbCheckEnabled() || updates.length === 0) {
         return { succeeded: 0, failed: updates.length };
     }
 
