@@ -7,6 +7,7 @@ import { LRUCache } from "lru-cache";
 import { CINEMETA_TTL_SEC, keys, SEARCH_TTL_SEC } from "./cacheKeys.ts";
 import {
     acquireLock,
+    deleteKey,
     getJsonValue,
     getJsonValues,
     releaseLock,
@@ -70,8 +71,9 @@ function remember<T extends CacheValue>(key: string, value: T): T {
     return value;
 }
 
-export function invalidateSearchCache(searchKey: string): void {
+export async function invalidateSearchCache(searchKey: string): Promise<void> {
     l1Cache.delete(searchKey);
+    if (searchKey) await deleteKey(searchKey);
 }
 
 async function persist<T extends CacheValue>(key: string, value: T, ttl: number): Promise<void> {
