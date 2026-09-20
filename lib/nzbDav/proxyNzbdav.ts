@@ -2,21 +2,21 @@ import { extname } from "@std/path/posix";
 import { Config } from "../../env.ts";
 import { streamFailureVideo } from "../streamFailureVideo.ts";
 
-// Connection pooling optimized for streaming
-// Note: If you ever experience random stream drops with older WebDAV servers, 
-// consider changing http2 to `false`. Some older servers have spotty HTTP/2 chunking.
 const httpClient = Deno.createHttpClient({
     poolIdleTimeout: 60_000,
     poolMaxIdlePerHost: 50,
     http2: false,
 });
 
-const AUTH_HEADER =
-    Config.NZBDAV_WEBDAV_USER && Config.NZBDAV_WEBDAV_PASS
-        ? `Basic ${btoa(`${Config.NZBDAV_WEBDAV_USER}:${Config.NZBDAV_WEBDAV_PASS}`)}`
-        : null;
+function webdavAuthHeader(): string | null {
+    if (!Config.NZBDAV_WEBDAV_USER || !Config.NZBDAV_WEBDAV_PASS) return null;
+    return `Basic ${btoa(`${Config.NZBDAV_WEBDAV_USER}:${Config.NZBDAV_WEBDAV_PASS}`)}`;
+}
 
-const WEBDAV_BASE = Config.NZBDAV_WEBDAV_URL.replace(/\/+$/, "");
+function webdavBase(): string {
+    return Config.NZBDAV_WEBDAV_URL.replace(/\/+$/, "");
+}
+
 const UNSAFE_CHARS_RX = /[\\/:*?"<>|]+/g;
 
 const PASSTHROUGH_HEADERS = [
@@ -53,7 +53,7 @@ function buildContentDisposition(fileName: string): string {
 function buildTargetUrl(viewPath: string): string {
     if (Config.USE_STRM_FILES) return viewPath;
     const cleanPath = viewPath.startsWith("/") ? viewPath.slice(1) : viewPath;
-    return `${WEBDAV_BASE}/${cleanPath}`;
+    return `${webdavBase()}/${cleanPath}`;
 }
 
 function buildUpstreamHeaders(req: Request): Headers {
@@ -67,8 +67,9 @@ function buildUpstreamHeaders(req: Request): Headers {
     }
     if (ifRange) headers.set("If-Range", ifRange);
 
-    if (AUTH_HEADER && !Config.USE_STRM_FILES) {
-        headers.set("Authorization", AUTH_HEADER);
+    const auth = webdavAuthHeader();
+    if (auth && !Config.USE_STRM_FILES) {
+        headers.set("Authorization", auth);
     }
 
     return headers;
@@ -113,7 +114,6 @@ async function cancelBody(body: ReadableStream<Uint8Array> | null): Promise<void
 function extractFileName(targetUrl: string, hint: string): string {
     if (hint) return hint;
     try {
-        // Use URL to safely strip query parameters if they exist
         const urlObj = new URL(targetUrl);
         return urlObj.pathname.split("/").pop() || "stream";
     } catch {
@@ -140,7 +140,7 @@ export async function proxyNzbdavStream(
             headers: buildUpstreamHeaders(req),
             client: httpClient,
             redirect: "follow",
-            signal: req.signal, // This handles cascade aborts natively
+            signal: req.signal,
         });
 
         if (!upstream.ok) {
@@ -156,8 +156,6 @@ export async function proxyNzbdavStream(
 
             const errorReason = `Upstream Error: ${upstream.status} ${upstream.statusText}`;
 
-            // If the user requested a specific byte range, sending a failure video from 
-            // byte 0 will corrupt playback. Only send failure video on fresh requests.
             if (!hasRange) {
                 const failureVid = await streamFailureVideo(req, errorReason);
                 if (failureVid) return failureVid;
@@ -175,10 +173,7 @@ export async function proxyNzbdavStream(
             return new Response(null, { status: upstream.status, headers: resHeaders });
         }
 
-        // Deno will automatically link `upstream.body` to this Response.
-        // If the client disconnects, Deno handles canceling `upstream.body` instantly.
         return new Response(upstream.body, { status: upstream.status, headers: resHeaders });
-
     } catch (e: unknown) {
         const message = e instanceof Error ? e.message : String(e);
 
