@@ -1,9 +1,8 @@
-
 import { connect } from "@db/redis";
 
 const jsonStringify = (data: any) => {
     return JSON.stringify(data, (_key, value) =>
-        typeof value === 'bigint' ? value.toString() : value
+        typeof value === "bigint" ? value.toString() : value
     );
 };
 
@@ -16,7 +15,6 @@ export const handler = {
 
             if (!REDIS_URL) throw new Error("Missing REDIS_URL");
 
-            // 2. Parse the Redis URL
             let url: URL;
             try {
                 url = new URL(REDIS_URL);
@@ -24,16 +22,13 @@ export const handler = {
                 throw new Error("Invalid URL format");
             }
 
-            const useTls = url.protocol === "rediss:";
-
             const options = {
                 hostname: url.hostname,
                 port: url.port ? parseInt(url.port) : 6379,
                 password: url.password || undefined,
                 username: url.username || undefined,
-                tls: useTls,
+                tls: url.protocol === "rediss:",
             };
-            console.log(options)
 
             const timeoutPromise = new Promise((_, reject) =>
                 setTimeout(() => reject(new Error("Connection timed out (5s)")), 5000)
@@ -45,7 +40,6 @@ export const handler = {
             ]) as Awaited<ReturnType<typeof connect>>;
 
             const pong = await client.ping();
-
             client.close();
 
             if (pong !== "PONG") {
@@ -58,10 +52,9 @@ export const handler = {
             }), {
                 headers: { "Content-Type": "application/json" }
             });
-
         } catch (error: any) {
             if (client) {
-                try { client.close(); } catch { }
+                try { client.close(); } catch { /* ignore */ }
             }
 
             console.error("Redis Test Error:", error);
