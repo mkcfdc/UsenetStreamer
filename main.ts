@@ -61,23 +61,41 @@ function maintenanceHandler(): Response {
     );
 }
 
-const missingKeys = validateConfig();
 const port = Config.PORT;
+let readyLogged = false;
 
-if (missingKeys.length > 0) {
+function appHandler(req: Request): Promise<Response> | Response {
+    const missing = validateConfig();
+    if (missing.length > 0) {
+        readyLogged = false;
+        return maintenanceHandler();
+    }
+    if (!readyLogged) {
+        readyLogged = true;
+        console.log("✅ %cConfiguration valid. Serving requests...", "color: green");
+        console.log(
+            "Install url: ",
+            `${Config.ADDON_BASE_URL.replace(/\/$/, "")}/${Config.ADDON_SHARED_SECRET}/manifest.json`,
+        );
+    }
+    return handler(req);
+}
+
+const startupMissing = validateConfig();
+if (startupMissing.length > 0) {
     console.error("❌ CRITICAL CONFIGURATION MISSING");
-    console.error(`Missing: ${missingKeys.join(", ")}`);
-    console.error("⚠️  Server started in MAINTENANCE MODE. Run: manage");
-
-    Deno.serve({ port }, maintenanceHandler);
+    console.error(`Missing: ${startupMissing.join(", ")}`);
+    console.error("⚠️  Serving maintenance responses until config is saved.");
 } else {
+    readyLogged = true;
     console.log("✅ %cConfiguration valid. Starting application...", "color: green");
     console.log(
         "Install url: ",
         `${Config.ADDON_BASE_URL.replace(/\/$/, "")}/${Config.ADDON_SHARED_SECRET}/manifest.json`,
     );
-    Deno.serve({ port }, handler);
 }
+
+Deno.serve({ port }, appHandler);
 
 async function shutdown() {
     try { await closeRedis(); } catch { /* ignore */ }
