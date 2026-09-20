@@ -8,6 +8,7 @@ export const SEARCH_TTL_SEC = 86_400; // 1 day
 export const SESSION_TTL_SEC = 86_400;
 export const NZBCHECK_TTL_SEC = 1_800; // 30 minutes
 export const WEBDAV_TTL_SEC = 3_600; // 1 hour
+export const WEBDAV_MISS_TTL_SEC = 10; // skip walks on recent misses
 export const SETTINGS_TTL_MS = 5_000;
 
 export const keys = {

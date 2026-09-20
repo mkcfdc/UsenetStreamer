@@ -10,7 +10,7 @@ export interface StreamCache {
     type: "series" | "movie";
     rawImdbId?: string;
     searchKey?: string;
-    status?: "failed" | "ready" | "pending";
+    status?: "failed" | "ready" | "pending" | "partial";
     failureMessage?: string;
     nzoId?: string;
 }
@@ -28,7 +28,7 @@ export interface StreamResult {
     title?: string;
     rawImdbId?: string;
     inFileSystem?: boolean;
-    status: "failed" | "ready" | "pending";
+    status: "failed" | "ready" | "pending" | "partial";
 }
 
 export interface NzbHistorySlot {

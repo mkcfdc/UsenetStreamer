@@ -1,6 +1,6 @@
-import { connect, type Redis } from "@db/redis";
+import type { Redis } from "ioredis";
 import { getOrSetSetting } from "./sqlite.ts";
-import { parseRedisUrl } from "../../shared/redisUrl.ts";
+import { createRedisClient } from "../../shared/ioredis.ts";
 
 let client: Redis | null = null;
 let connectedUrl: string | null = null;
@@ -10,16 +10,24 @@ function redisUrl(): string {
         getOrSetSetting("REDIS_URL", "redis://redis:6379", "Connection string for Redis");
 }
 
-export async function getRedis(): Promise<Redis> {
+/** Session client. Same factory as the addon; no RedisJSON commands. */
+export function getRedis(): Redis {
     const url = redisUrl();
     if (client && connectedUrl === url) return client;
 
     if (client) {
-        try { client.close(); } catch { /* ignore */ }
+        try { client.disconnect(); } catch { /* ignore */ }
         client = null;
     }
 
-    client = await connect(parseRedisUrl(url));
+    client = createRedisClient(url);
     connectedUrl = url;
     return client;
+}
+
+export async function closeRedis(): Promise<void> {
+    if (!client) return;
+    await client.quit();
+    client = null;
+    connectedUrl = null;
 }
