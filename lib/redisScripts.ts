@@ -1,86 +1,71 @@
-// ═══════════════════════════════════════════════════════════════════
-// Optimized Redis Lua Scripts
-// ═══════════════════════════════════════════════════════════════════
+/** Redis Lua scripts used by the cache layer. */
 
-/**
- * ACQUIRE_LOCK_SCRIPT
- * Perfectly optimized. Just formatted with template literals for readability.
- */
+/** SET NX PX lock; returns {acquired, pttl}. */
 export const ACQUIRE_LOCK_SCRIPT = `
-    local result = redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2], 'NX')
-    if result then 
-        return {1, tonumber(ARGV[2])} 
-    end
-    return {0, redis.call('PTTL', KEYS[1])}
+local ok = redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2], 'NX')
+if ok then
+    return {1, tonumber(ARGV[2])}
+end
+return {0, redis.call('PTTL', KEYS[1])}
+`;
+
+/** Release only if the caller still owns the lock. */
+export const RELEASE_LOCK_SCRIPT = `
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+    return redis.call('DEL', KEYS[1])
+end
+return 0
 `;
 
 /**
- * REMOVE_PROWLARR_SCRIPT
- * Optimization: Removed the redundant 'EXISTS' check.
- * Optimization: Fixed the JSON.ARRLEN return value parsing to correctly trigger the DEL cleanup.
+ * Remove one search result by downloadUrl.
+ * Document root is a JSON array of result objects.
  */
-export const REMOVE_PROWLARR_SCRIPT = `
-    local k = KEYS[1]
-    
-    -- JSON.GET natively returns nil if missing, saving an EXISTS operation
-    local a = redis.call('JSON.GET', k, '$')
-    if not a then return 0 end
-    
-    local d = cjson.decode(a)
-    local t = d[1]
-    if not t or type(t) ~= 'table' then return 0 end
-    
-    local x = -1
-    for i, v in ipairs(t) do 
-        if v.downloadUrl == ARGV[1] then 
-            x = i - 1 
-            break 
-        end 
+export const REMOVE_SEARCH_RESULT_SCRIPT = `
+local raw = redis.call('JSON.GET', KEYS[1], '$')
+if not raw then return 0 end
+
+local decoded = cjson.decode(raw)
+local list = decoded[1]
+if type(list) ~= 'table' then return 0 end
+
+local idx = -1
+for i, item in ipairs(list) do
+    if item.downloadUrl == ARGV[1] then
+        idx = i - 1
+        break
     end
-    
-    if x >= 0 then 
-        redis.call('JSON.ARRPOP', k, '$', x)
-        
-        -- '$' returns an array of lengths for all matches. We check the first result.
-        local l = redis.call('JSON.ARRLEN', k, '$')
-        if l and l[1] == 0 then 
-            redis.call('DEL', k) 
-        end
-        return 1 
-    end
-    
-    return 0
+end
+
+if idx < 0 then return 0 end
+
+redis.call('JSON.ARRPOP', KEYS[1], '$', idx)
+local len = redis.call('JSON.ARRLEN', KEYS[1], '$')
+if len and len[1] == 0 then
+    redis.call('DEL', KEYS[1])
+end
+return 1
 `;
 
-/**
- * FAST_FAIL_SCRIPT
- * CRITICAL OPTIMIZATION: Instead of decoding the entire document in Lua,
- * we use the RedisJSON native C-engine to extract ONLY the 5 specific fields we need.
- * This prevents blocking the Redis thread on large JSON documents.
- */
-export const FAST_FAIL_SCRIPT = `
-    local k = KEYS[1]
-    
-    -- Extract ONLY targeted fields. Fast and lightweight!
-    local j = redis.call('JSON.GET', k, '$.status', '$.failureMessage', '$.nzoId', '$.viewPath', '$.fileName')
-    if not j then return nil end
-    
-    local d = cjson.decode(j)
-    
-    -- RedisJSON multiple paths return objects wrapped in arrays, e.g., {"$.status":["failed"]}
-    local function get_val(path)
-        if d[path] and d[path][1] then 
-            return d[path][1] 
-        else 
-            return '' 
-        end
-    end
+/** Pull the handful of fields the stream hot-path needs. */
+export const STREAM_STATUS_SCRIPT = `
+local raw = redis.call('JSON.GET', KEYS[1], '$.status', '$.failureMessage', '$.nzoId', '$.viewPath', '$.fileName')
+if not raw then return nil end
 
-    return {
-        get_val('$.status'),
-        get_val('$.failureMessage'),
-        get_val('$.nzoId'),
-        get_val('$.viewPath'),
-        get_val('$.fileName')
-    }
+local doc = cjson.decode(raw)
+local function first(path)
+    local node = doc[path]
+    if type(node) == 'table' and node[1] ~= nil then
+        return node[1]
+    end
+    return ''
+end
+
+return {
+    first('$.status'),
+    first('$.failureMessage'),
+    first('$.nzoId'),
+    first('$.viewPath'),
+    first('$.fileName')
+}
 `;

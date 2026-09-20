@@ -30,11 +30,21 @@ services:
       - media
   redis:
     image: redis:8.2.3-alpine
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --maxmemory
+      - 256mb
+      - --maxmemory-policy
+      - allkeys-lru
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - redis-data:/data
     networks:
       - media
     restart: unless-stopped
@@ -106,3 +116,4 @@ networks:
     driver: bridge
 volumes:
   usenet-data:
+  redis-data:
