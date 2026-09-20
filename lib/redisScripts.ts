@@ -69,3 +69,9 @@ return {
     first('$.fileName')
 }
 `;
+
+/** @deprecated Use STREAM_STATUS_SCRIPT */
+export const FAST_FAIL_SCRIPT = STREAM_STATUS_SCRIPT;
+
+/** @deprecated Use REMOVE_SEARCH_RESULT_SCRIPT */
+export const REMOVE_PROWLARR_SCRIPT = REMOVE_SEARCH_RESULT_SCRIPT;
