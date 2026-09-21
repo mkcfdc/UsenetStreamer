@@ -1,5 +1,6 @@
 import { Redis } from "ioredis";
 import { Config } from "../env.ts";
+import { createRedisClient } from "../shared/ioredis.ts";
 import {
     ACQUIRE_LOCK_SCRIPT,
     RELEASE_LOCK_SCRIPT,
@@ -42,21 +43,13 @@ function attachScripts(r: Redis): RedisWithScripts {
 }
 
 function createClient(url: string): RedisWithScripts {
-    const r = attachScripts(new Redis(url, {
-        enableReadyCheck: true,
-        maxRetriesPerRequest: 2,
-        enableOfflineQueue: false,
-        lazyConnect: false,
-        retryStrategy: (times) => Math.min(times * 100, 2000),
+    return attachScripts(createRedisClient(url, {
+        onError: (err) => console.error(LOG, LABEL, ERR, `Error: ${err.message}`),
+        onConnect: () => console.log(LOG, LABEL, OK, "Connected"),
+        onReady: () => console.log(LOG, LABEL, OK, "Ready"),
+        onReconnecting: () => console.log(LOG, LABEL, WARN, "Reconnecting..."),
+        onClose: () => console.warn(LOG, LABEL, WARN, "Connection closed"),
     }));
-
-    r.on("error", (err) => console.error(LOG, LABEL, ERR, `Error: ${err.message}`));
-    r.on("connect", () => console.log(LOG, LABEL, OK, "Connected"));
-    r.on("ready", () => console.log(LOG, LABEL, OK, "Ready"));
-    r.on("reconnecting", () => console.log(LOG, LABEL, WARN, "Reconnecting..."));
-    r.on("close", () => console.warn(LOG, LABEL, WARN, "Connection closed"));
-
-    return r;
 }
 
 /** Live client. Recreates itself if REDIS_URL changes after a config save. */
