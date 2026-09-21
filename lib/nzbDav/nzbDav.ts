@@ -125,13 +125,43 @@ async function addNzbToNzbdav(nzbUrl: string, category: string, jobName: string)
     return nzoId;
 }
 
-async function monitorNzbdavJob(nzoId: string, category: string, cacheKey: string): Promise<void> {
+function isAbort(err: unknown): boolean {
+    return (err instanceof DOMException && err.name === "AbortError") ||
+        (err instanceof Error && err.name === "AbortError");
+}
+
+/** pending → partial → ready. Never clobber ready/partial playback with failed. */
+async function writeStreamState(
+    cacheKey: string,
+    next: Record<string, unknown>,
+    ttl?: number,
+): Promise<boolean> {
+    const current = await getStreamStatus(cacheKey);
+    const from = current?.status;
+    const playing = from === "ready" || from === "partial" || Boolean(current?.viewPath);
+    if (next.status === "failed" && playing) {
+        log("State", `Skip failed overwrite; already ${from || "playing"} ${cacheKey}`);
+        return false;
+    }
+    return mergeJson(cacheKey, next, ttl);
+}
+
+async function monitorNzbdavJob(
+    nzoId: string,
+    category: string,
+    cacheKey: string,
+    signal?: AbortSignal,
+): Promise<void> {
     const deadline = Date.now() + Config.NZBDAV_POLL_TIMEOUT_MS;
     let interval = 700;
     log("Monitor", `Starting bg monitor for ${nzoId}`);
 
     try {
         while (Date.now() < deadline) {
+            if (signal?.aborted) {
+                log("Monitor", `Stopped for ${nzoId} (aborted)`);
+                return;
+            }
             const json = await fetchNzbdav<any>("history", { start: "0", limit: "10", nzo_ids: nzoId, category });
             const slots = json?.history?.slots ?? json?.slots ?? [];
             const raw = slots.find((s: any) => (s?.nzo_id || s?.id) === nzoId) ?? slots[0];
@@ -140,7 +170,7 @@ async function monitorNzbdavJob(nzoId: string, category: string, cacheKey: strin
                 const status = (raw.status || "").toLowerCase();
                 if (status === "completed" || status === "success") {
                     log("Monitor", `Job ${nzoId} completed`);
-                    await mergeJson(cacheKey, { status: "ready" }, STREAM_TTL_SEC);
+                    await writeStreamState(cacheKey, { status: "ready" }, STREAM_TTL_SEC);
                     return;
                 }
                 if (status === "failed" || status === "error") {
@@ -152,18 +182,25 @@ async function monitorNzbdavJob(nzoId: string, category: string, cacheKey: strin
                     );
                 }
             }
-            await sleep(interval);
+            await sleep(interval, signal);
             interval = Math.min(interval * 1.5, 8000);
         }
         log("Monitor", `Job ${nzoId} timed out`);
     } catch (err: any) {
+        if (signal?.aborted || isAbort(err)) {
+            log("Monitor", `Stopped for ${nzoId} (aborted)`);
+            return;
+        }
         error("Monitor", `Failed for ${nzoId}`, err);
-        await mergeJson(cacheKey, {
+        const wrote = await writeStreamState(cacheKey, {
             status: "failed",
             failureMessage: err.failureMessage || err.message,
             nzoId: err.nzoId || nzoId,
-        }).catch((e) => error("Monitor", "Failed to write error state", e));
-        log("Monitor", `Marked ${cacheKey} as failed`);
+        }).catch((e) => {
+            error("Monitor", "Failed to write error state", e);
+            return false;
+        });
+        if (wrote) log("Monitor", `Marked ${cacheKey} as failed`);
     }
 }
 
@@ -172,6 +209,7 @@ async function waitForPartialVideoFile(
     category: string,
     jobName: string,
     episode?: EpisodeInfo,
+    signal?: AbortSignal,
 ): Promise<{ viewPath: string; name: string }> {
     const tStart = now();
     log("Wait", `Waiting for media file. Job: ${jobName}`);
@@ -200,9 +238,14 @@ async function waitForPartialVideoFile(
         } as any);
         if (file?.viewPath) {
             log("Wait", `Found on FS after ${dur(tStart)}ms`);
+            await writeStreamState(cacheKey, {
+                status: "partial",
+                viewPath: file.viewPath,
+                fileName: file.name,
+            }, STREAM_TTL_SEC);
             return { viewPath: file.viewPath, name: file.name };
         }
-    }, { timeout: POLLING.PARTIAL_FILE_TIMEOUT });
+    }, { timeout: POLLING.PARTIAL_FILE_TIMEOUT, signal });
 }
 
 interface BuildParams {
@@ -215,10 +258,11 @@ interface BuildParams {
     episode?: EpisodeInfo;
     indexer?: string;
     fileId?: string;
+    signal?: AbortSignal;
 }
 
 async function buildStream(params: BuildParams): Promise<StreamResult> {
-    const { urlHash, cacheKey, downloadUrl, category, title, jobName, episode, indexer, fileId } = params;
+    const { urlHash, cacheKey, downloadUrl, category, title, jobName, episode, indexer, fileId, signal } = params;
     const t0 = now();
     const scope = `Build:${urlHash.slice(0, 6)}`;
     log(scope, `Building stream: ${title}`);
@@ -226,32 +270,39 @@ async function buildStream(params: BuildParams): Promise<StreamResult> {
     const proxyUrl = `${Config.ADDON_BASE_URL}/nzb/proxy/${urlHash}.nzb`;
     const nzoId = await addNzbToNzbdav(proxyUrl, category, jobName);
 
-    mergeJson(cacheKey, { status: "pending", nzoId, category, jobName, title, downloadUrl })
-        .catch((e) => error(scope, "Failed to write pending state", e));
+    await writeStreamState(cacheKey, { status: "pending", nzoId, category, jobName, title, downloadUrl });
 
-    monitorNzbdavJob(nzoId, category, cacheKey);
-
-    const partial = await waitForPartialVideoFile(cacheKey, category, jobName, episode);
-    log(scope, `Stream ready. Build time: ${dur(t0)}ms`);
-
-    const result: StreamResult = {
-        nzoId,
-        category,
-        jobName,
-        viewPath: partial.viewPath,
-        fileName: partial.name,
-        downloadUrl,
-        guid: fileId,
-        indexer,
-        title,
-        inFileSystem: true,
-        status: "ready",
+    const monitor = new AbortController();
+    const stopMonitor = () => {
+        if (!monitor.signal.aborted) monitor.abort();
     };
+    signal?.addEventListener("abort", stopMonitor, { once: true });
+    monitorNzbdavJob(nzoId, category, cacheKey, monitor.signal);
 
-    mergeJson(cacheKey, { ...result }, STREAM_TTL_SEC)
-        .catch((e) => error(scope, "Failed to write ready state", e));
+    try {
+        const partial = await waitForPartialVideoFile(cacheKey, category, jobName, episode, signal);
+        log(scope, `Stream ready. Build time: ${dur(t0)}ms`);
 
-    return result;
+        const result: StreamResult = {
+            nzoId,
+            category,
+            jobName,
+            viewPath: partial.viewPath,
+            fileName: partial.name,
+            downloadUrl,
+            guid: fileId,
+            indexer,
+            title,
+            inFileSystem: true,
+            status: "ready",
+        };
+
+        await writeStreamState(cacheKey, { ...result }, STREAM_TTL_SEC);
+        return result;
+    } finally {
+        signal?.removeEventListener("abort", stopMonitor);
+        stopMonitor();
+    }
 }
 
 function toReadyResult(
@@ -459,6 +510,7 @@ export async function streamNzbdavProxy(keyHash: string, req: Request): Promise<
                     episode,
                     indexer,
                     fileId: guid,
+                    signal: req.signal,
                 });
             } finally {
                 await releaseLock(lockKey, lockToken);
