@@ -1,4 +1,5 @@
 import { getOrSetSetting } from "./utils/sqlite.ts";
+import { isNzbCheckEnabled } from "./utils/nzbEfficiency.ts";
 
 /**
  * Configuration Manager
@@ -11,6 +12,14 @@ export const Config = {
     get ADDON_BASE_URL() {
         const val = getOrSetSetting("ADDON_BASE_URL", "", "Public URL for the addon");
         return val;
+    },
+
+    get ADDON_INTERNAL_URL() {
+        return getOrSetSetting(
+            "ADDON_INTERNAL_URL",
+            "",
+            "In-cluster URL NZBDav uses to fetch NZBs (default http://usenetstreamer:PORT)",
+        ).trim();
     },
 
     get PORT() {
@@ -117,6 +126,7 @@ export const Config = {
         [".mp4", "video/mp4"],
         [".m4v", "video/mp4"],
         [".mkv", "video/x-matroska"],
+        [".webb", "video/webm"],
         [".webm", "video/webm"],
         [".avi", "video/x-msvideo"],
         [".mov", "video/quicktime"],
@@ -138,7 +148,7 @@ export function searchProvider(): SearchProvider {
 }
 
 export function nzbCheckEnabled(): boolean {
-    return Boolean(Config.NZB_CHECK_URL && Config.NZB_CHECK_API_KEY);
+    return isNzbCheckEnabled(Config.NZB_CHECK_URL, Config.NZB_CHECK_API_KEY);
 }
 
 export function validateConfig(): string[] {
