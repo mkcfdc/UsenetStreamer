@@ -126,7 +126,6 @@ export const Config = {
         [".mp4", "video/mp4"],
         [".m4v", "video/mp4"],
         [".mkv", "video/x-matroska"],
-        [".webb", "video/webm"],
         [".webm", "video/webm"],
         [".avi", "video/x-msvideo"],
         [".mov", "video/quicktime"],
