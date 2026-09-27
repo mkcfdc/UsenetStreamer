@@ -16,6 +16,7 @@ export interface Config {
     USE_STREMIO_NNTP: boolean;
     INDEXING_METHOD: string;
     REDIS_URL: string;
+    lockedKeys?: string[];
 }
 
-export type IndexingMethod = 'prowlarr' | 'nzbhydra2' | 'direct';
+export type IndexingMethod = "prowlarr" | "nzbhydra2" | "direct";
