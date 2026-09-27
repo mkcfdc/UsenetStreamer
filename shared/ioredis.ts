@@ -19,8 +19,8 @@ export function createRedisClient(url: string, hooks: CreateRedisOptions = {}): 
         password: parsed.password,
         tls: parsed.tls ? {} : undefined,
         enableReadyCheck: true,
-        maxRetriesPerRequest: 2,
-        enableOfflineQueue: false,
+        maxRetriesPerRequest: 3,
+        enableOfflineQueue: true,
         lazyConnect: false,
         retryStrategy: (times) => Math.min(times * 100, 2000),
     });

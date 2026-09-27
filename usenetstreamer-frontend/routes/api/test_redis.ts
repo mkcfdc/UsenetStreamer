@@ -1,4 +1,4 @@
-import { createRedisClient } from "../../../shared/ioredis.ts";
+import { pingRedis } from "../../../shared/redisRaw.ts";
 
 const jsonStringify = (data: unknown) => {
     return JSON.stringify(data, (_key, value) =>
@@ -8,8 +8,6 @@ const jsonStringify = (data: unknown) => {
 
 export const handler = {
     async POST(ctx: { req: Request }) {
-        let client: ReturnType<typeof createRedisClient> | undefined;
-        let timeoutId: number | undefined;
         try {
             const body = await ctx.req.json();
             const { REDIS_URL } = body;
@@ -22,21 +20,11 @@ export const handler = {
                 throw new Error("Invalid URL format");
             }
 
-            client = createRedisClient(REDIS_URL);
-
-            const pong = await Promise.race([
-                client.ping(),
-                new Promise<never>((_, reject) =>
-                    timeoutId = setTimeout(() => reject(new Error("Connection timed out (5s)")), 5000)
-                ),
-            ]);
-
-            await client.quit();
-            client = undefined;
-
-            if (pong !== "PONG") {
-                throw new Error(`Unexpected response: ${pong}`);
+            if (!REDIS_URL.startsWith("redis://") && !REDIS_URL.startsWith("rediss://")) {
+                throw new Error("URL must start with redis:// or rediss://");
             }
+
+            await pingRedis(REDIS_URL, 5000);
 
             return new Response(jsonStringify({
                 success: true,
@@ -45,16 +33,7 @@ export const handler = {
                 headers: { "Content-Type": "application/json" },
             });
         } catch (error: unknown) {
-            if (client) {
-                try {
-                    client.disconnect();
-                } catch (closeError) {
-                    console.error("Failed to close Redis test client:", closeError);
-                }
-            }
-
             console.error("Redis Test Error:", error);
-
             return new Response(jsonStringify({
                 success: false,
                 message: error instanceof Error ? error.message : String(error),
@@ -62,8 +41,6 @@ export const handler = {
                 status: 200,
                 headers: { "Content-Type": "application/json" },
             });
-        } finally {
-            if (timeoutId !== undefined) clearTimeout(timeoutId);
         }
     },
 };
