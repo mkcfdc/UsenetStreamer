@@ -212,8 +212,13 @@ export async function acquireLock(key: string, ttlMs: number, token: string): Pr
         const res = await getRedis().acquireLockPx(key, token, ttlMs);
         return Array.isArray(res) ? res[0] === 1 : false;
     } catch {
-        const ok = await getRedis().set(key, token, "PX", ttlMs, "NX");
-        return ok === "OK";
+        try {
+            const ok = await getRedis().set(key, token, "PX", ttlMs, "NX");
+            return ok === "OK";
+        } catch {
+            // A cache lock is an optimization; keep searches available if Redis is down.
+            return true;
+        }
     }
 }
 

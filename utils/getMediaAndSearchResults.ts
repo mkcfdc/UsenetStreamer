@@ -135,7 +135,10 @@ function getOrCompute<T extends CacheValue>(
     })();
 
     inflight.set(key, work);
-    work.finally(() => inflight.delete(key));
+    void work.then(
+        () => inflight.delete(key),
+        () => inflight.delete(key),
+    );
     return work;
 }
 
