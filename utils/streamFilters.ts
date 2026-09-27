@@ -24,7 +24,6 @@ export function formatVideoCard(parsed: ParsedFilename | ParsedShow, options: Fo
     age = null,
     grabs = null,
     isComplete = undefined,
-    message = ''
   } = options;
 
   const isTv = 'isTv' in parsed && parsed.isTv;

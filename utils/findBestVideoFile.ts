@@ -73,8 +73,11 @@ export async function findBestVideoFile(
     if (!found) {
         try {
             found = await findWebdavCandidate(params);
-        } catch (e: any) {
-            if (e?.status === 404 || e?.message?.includes?.("404")) found = null;
+        } catch (e) {
+            const isNotFound = e instanceof Error
+                ? e.message.includes("404")
+                : typeof e === "object" && e !== null && "status" in e && e.status === 404;
+            if (isNotFound) found = null;
             else throw e;
         }
     }

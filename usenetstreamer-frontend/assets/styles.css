@@ -1,1 +1,14 @@
 @import "tailwindcss";
+
+.toggle-checkbox:checked {
+  right: 0;
+  border-color: #06b6d4;
+}
+
+.toggle-checkbox:checked + .toggle-label {
+  background-color: #06b6d4;
+}
+
+.toggle-label {
+  box-shadow: inset 0 0 0 9999px #1e293b;
+}

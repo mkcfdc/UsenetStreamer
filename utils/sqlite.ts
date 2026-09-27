@@ -18,12 +18,13 @@ function getDb(): DatabaseSync {
     try {
         Deno.mkdirSync(dataDir, { recursive: true });
         console.log(`%c[Database] %cEnsured data directory exists: ${dataDir}`, "color: blue;", "color: yellow;");
-    } catch (e) {
-        if (e instanceof Deno.errors.AlreadyExists) {
+    } catch (error) {
+        if (error instanceof Deno.errors.AlreadyExists) {
             // Directory already exists, which is fine
         } else {
-            console.error(`%c[Database] %cFailed to create data directory: ${dataDir}, Error: ${e.message}`, "color: blue;", "color: red;");
-            throw e;
+            const message = error instanceof Error ? error.message : String(error);
+            console.error(`%c[Database] %cFailed to create data directory: ${dataDir}, Error: ${message}`, "color: blue;", "color: red;");
+            throw error;
         }
     }
 
@@ -32,6 +33,23 @@ function getDb(): DatabaseSync {
     const db = new DatabaseSync(dbPath);
     db.exec(SQLITE_PRAGMAS);
     db.exec(SCHEMA_SQL);
+
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS nntp_servers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      host TEXT NOT NULL,
+      port INTEGER NOT NULL,
+      username TEXT,
+      password TEXT,
+      ssl INTEGER NOT NULL DEFAULT 1,
+      connection_count INTEGER NOT NULL DEFAULT 4,
+      priority INTEGER NOT NULL DEFAULT 0,
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT (STRFTIME('%Y-%m-%d %H:%M:%S', 'now')),
+      updated_at TEXT NOT NULL DEFAULT (STRFTIME('%Y-%m-%d %H:%M:%S', 'now'))
+    ) STRICT;
+  `);
 
     dbInstance = db;
     return db;
@@ -65,12 +83,10 @@ export function getOrSetSetting(key: string, defaultValue: string, description: 
         return row.value;
     }
 
-    try {
-        const stmt = db.prepare("INSERT INTO settings (key, value, description) VALUES (?, ?, ?)");
-        stmt.run(key, defaultValue, description);
-    } catch (_err) {
-        // Ignore race conditions (SQLITE_CONSTRAINT)
-    }
+    // 3. Fallback to Default & Persist to DB
+    // We insert the default so it becomes editable in the DB for next time
+    const stmt = db.prepare("INSERT OR IGNORE INTO settings (key, value, description) VALUES (?, ?, ?)");
+    stmt.run(key, defaultValue, description);
 
     setCachedSetting(key, defaultValue);
     return defaultValue;
@@ -180,7 +196,14 @@ export function getActiveNntpServerUrls(): string[] {
             ORDER BY priority ASC, id ASC
         `);
 
-        const rows = stmt.all() as any[];
+        const rows = stmt.all() as unknown as Array<{
+            host: string;
+            port: number;
+            username: string | null;
+            password: string | null;
+            ssl: number;
+            connection_count: number;
+        }>;
 
         for (const row of rows) {
             const { host, port, username, password, ssl, connection_count } = row;

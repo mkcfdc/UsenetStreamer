@@ -1,4 +1,4 @@
-import { define } from "../../utils.ts";
+import { define, getErrorMessage } from "../../utils.ts";
 import { Context } from "fresh/server";
 
 export const handler = define.handlers({
@@ -40,8 +40,8 @@ export const handler = define.handlers({
                 } else {
                     results.nzbdav.message = `HTTP Error: ${res.status} ${res.statusText}`;
                 }
-            } catch (error: any) {
-                results.nzbdav.message = error.message || "Connection Failed";
+            } catch (error) {
+                results.nzbdav.message = getErrorMessage(error) || "Connection Failed";
             }
 
             // 2. Test WebDAV
@@ -67,17 +67,17 @@ export const handler = define.handlers({
                 } else {
                     results.webdav.message = `HTTP Error: ${res.status} ${res.statusText}`;
                 }
-            } catch (error: any) {
-                results.webdav.message = error.message || "Connection Failed";
+            } catch (error) {
+                results.webdav.message = getErrorMessage(error) || "Connection Failed";
             }
 
             return new Response(JSON.stringify(results), {
                 headers: { "Content-Type": "application/json" },
             });
 
-        } catch (error: any) {
+        } catch (error) {
             console.error("Test Connection Error:", error);
-            return new Response(JSON.stringify({ error: error.message }), { status: 500 });
+            return new Response(JSON.stringify({ error: getErrorMessage(error) }), { status: 500 });
         }
     },
 });

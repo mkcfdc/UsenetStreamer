@@ -7,6 +7,7 @@ import { NzbCheckSection } from "../components/config/NzbCheckSection.tsx";
 import { InstallSection } from "../components/config/InstallSection.tsx";
 import { RedisSection } from "../components/config/RedisSection.tsx";
 import { StremioNNTPSection } from "../components/config/StremioNntpSection.tsx";
+import { getErrorMessage } from "../utils.ts";
 
 const FeatureFlagsSection = ({ config, onChange }: { config: Config, onChange: (e: Event) => void }) => (
     <fieldset class="mb-10 pb-8 border-b border-white/5">
@@ -27,7 +28,6 @@ const FeatureFlagsSection = ({ config, onChange }: { config: Config, onChange: (
                 <label htmlFor="USE_STREMIO_NNTP" class="toggle-label block overflow-hidden h-6 rounded-full bg-slate-700 cursor-pointer"></label>
             </div>
         </div>
-        <style dangerouslySetInnerHTML={{ __html: `.toggle-checkbox:checked { right: 0; border-color: #06b6d4; } .toggle-checkbox:checked + .toggle-label { background-color: #06b6d4; } .toggle-label { box-shadow: inset 0 0 0 9999px #1e293b; }` }} />
     </fieldset>
 );
 
@@ -47,7 +47,7 @@ export default function ConfigForm() {
             const res = await fetch("/api/config");
             if (!res.ok) throw new Error("Failed");
             setConfig(await res.json());
-        } catch (e: any) { setMessage({ text: e.message, type: "error" }); }
+        } catch (e) { setMessage({ text: getErrorMessage(e), type: "error" }); }
         finally { setLoading(false); }
     };
 
@@ -94,7 +94,7 @@ export default function ConfigForm() {
             });
             if (!res.ok) throw new Error("Failed to save");
             setMessage({ text: "Configuration saved successfully!", type: "success" });
-        } catch (e: any) { setMessage({ text: e.message, type: "error" }); }
+        } catch (e) { setMessage({ text: getErrorMessage(e), type: "error" }); }
         finally { setSaving(false); setTimeout(() => setMessage(null), 3000); }
     };
 

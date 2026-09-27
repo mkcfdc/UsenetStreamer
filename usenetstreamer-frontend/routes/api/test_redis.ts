@@ -9,6 +9,7 @@ const jsonStringify = (data: unknown) => {
 export const handler = {
     async POST(ctx: { req: Request }) {
         let client: ReturnType<typeof createRedisClient> | undefined;
+        let timeoutId: number | undefined;
         try {
             const body = await ctx.req.json();
             const { REDIS_URL } = body;
@@ -26,7 +27,7 @@ export const handler = {
             const pong = await Promise.race([
                 client.ping(),
                 new Promise<never>((_, reject) =>
-                    setTimeout(() => reject(new Error("Connection timed out (5s)")), 5000)
+                    timeoutId = setTimeout(() => reject(new Error("Connection timed out (5s)")), 5000)
                 ),
             ]);
 
@@ -45,7 +46,11 @@ export const handler = {
             });
         } catch (error: unknown) {
             if (client) {
-                try { client.disconnect(); } catch { /* ignore */ }
+                try {
+                    client.disconnect();
+                } catch (closeError) {
+                    console.error("Failed to close Redis test client:", closeError);
+                }
             }
 
             console.error("Redis Test Error:", error);
@@ -57,6 +62,8 @@ export const handler = {
                 status: 200,
                 headers: { "Content-Type": "application/json" },
             });
+        } finally {
+            if (timeoutId !== undefined) clearTimeout(timeoutId);
         }
     },
 };

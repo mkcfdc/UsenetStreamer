@@ -5,7 +5,7 @@ import type { RouteMatch } from "./types.ts";
 export const manifestRoute: RouteMatch = {
     pattern: new URLPattern({ pathname: "/:apiKey/manifest.json" }),
     methods: ["GET"],
-    handler: async (_req: Request, match: URLPatternResult): Promise<Response> => {
+    handler: (_req: Request, match: URLPatternResult) => {
         const apiKey = match.pathname.groups.apiKey;
 
         if (apiKey !== Config.ADDON_SHARED_SECRET) {

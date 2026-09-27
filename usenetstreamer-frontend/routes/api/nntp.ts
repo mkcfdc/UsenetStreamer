@@ -1,5 +1,5 @@
 // routes/api/nntp.ts
-import { define } from "../../utils.ts";
+import { define, getErrorMessage } from "../../utils.ts";
 import { Context } from "fresh/server";
 import { getAllNntpServers, addNntpServer, removeNntpServer, toggleNntpServer } from "../../utils/sqlite.ts";
 
@@ -39,12 +39,12 @@ export const handler = define.handlers<unknown, unknown>({
             });
 
             return new Response(JSON.stringify({ message: "Server added successfully." }), { status: 201 });
-        } catch (error: any) {
+        } catch (error) {
             console.error("Error adding nntp server:", error);
-            if (error.message && error.message.includes("UNIQUE constraint failed")) {
+            if (getErrorMessage(error).includes("UNIQUE constraint failed")) {
                 return new Response(JSON.stringify({ message: "A server with this name already exists." }), { status: 409 });
             }
-            return new Response(JSON.stringify({ message: error.message || "Failed to add server" }), { status: 500 });
+            return new Response(JSON.stringify({ message: getErrorMessage(error) || "Failed to add server" }), { status: 500 });
         }
     },
 

@@ -19,7 +19,8 @@ export function getDb(): DatabaseSync {
         Deno.mkdirSync(dataDir, { recursive: true });
     } catch (e) {
         if (!(e instanceof Deno.errors.AlreadyExists)) {
-            console.error(`%c[Database] %cFailed to create data directory: ${dataDir}, Error: ${e.message}`, "color: blue;", "color: red;");
+            const message = e instanceof Error ? e.message : String(e);
+            console.error(`%c[Database] %cFailed to create data directory: ${dataDir}, Error: ${message}`, "color: blue;", "color: red;");
             throw e;
         }
     }
@@ -56,11 +57,10 @@ export function getOrSetSetting(key: string, defaultValue: string, description: 
         return row.value;
     }
 
-    try {
-        db.prepare("INSERT INTO settings (key, value, description) VALUES (?, ?, ?)").run(key, defaultValue, description);
-    } catch (_err) {
-        // Ignore race conditions (SQLITE_CONSTRAINT)
-    }
+    // 3. Fallback to Default & Persist to DB
+    // We insert the default so it becomes editable in the DB for next time
+    const stmt = db.prepare("INSERT OR IGNORE INTO settings (key, value, description) VALUES (?, ?, ?)");
+    stmt.run(key, defaultValue, description);
 
     setCachedSetting(key, defaultValue);
     return defaultValue;

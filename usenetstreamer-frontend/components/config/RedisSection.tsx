@@ -1,5 +1,6 @@
 import { useState } from "preact/hooks";
 import { Config } from "../../utils/configTypes.ts";
+import { getErrorMessage } from "../../utils.ts";
 
 interface Props {
     config: Config;
@@ -44,9 +45,9 @@ export function RedisSection({ config, onChange }: Props) {
             const data = await response.json();
             setTestResult(data);
 
-        } catch (error: any) {
+        } catch (error) {
             console.error("Redis Test failed", error);
-            setTestResult({ success: false, message: "Server Error: " + error.message });
+            setTestResult({ success: false, message: "Server Error: " + getErrorMessage(error) });
         } finally {
             setTesting(false);
         }

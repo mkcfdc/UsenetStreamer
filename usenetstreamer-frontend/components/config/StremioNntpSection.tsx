@@ -1,6 +1,7 @@
 import { useState, useEffect } from "preact/hooks";
 import { Config } from "../../utils/configTypes.ts";
 import type { NntpServer } from "../../utils/sqlite.ts";
+import { getErrorMessage } from "../../utils.ts";
 
 interface Props {
     config: Config;
@@ -67,8 +68,8 @@ export function StremioNNTPSection({ config }: Props) {
             // Reset form
             setNewServer({ name: "", host: "", port: 563, username: "", password: "", ssl: true, connection_count: 4, priority: 0 });
             fetchServers();
-        } catch (e: any) {
-            setMessage({ text: e.message, type: "error" });
+        } catch (e) {
+            setMessage({ text: getErrorMessage(e), type: "error" });
         } finally {
             setSubmitting(false);
             setTimeout(() => setMessage(curr => curr?.type === 'success' ? null : curr), 3000);

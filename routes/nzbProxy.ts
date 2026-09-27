@@ -75,8 +75,10 @@ export const nzbProxyRoute: RouteMatch = {
             }
 
             return new Response(finalResponse.body, { headers });
-        } catch (err: any) {
-            if (err.name === "AbortError") {
+        } catch (err) {
+            // Gracefully handle the case where the client cancels the download
+            if (err instanceof Error && err.name === "AbortError") {
+                // 499 is the standard Client Closed Request code
                 return new Response(null, { status: 499 });
             }
             console.error("[NZB Proxy] Error:", err);

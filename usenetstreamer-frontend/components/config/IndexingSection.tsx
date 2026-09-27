@@ -1,6 +1,7 @@
 import { useState, useEffect } from "preact/hooks";
 import { Config, IndexingMethod } from "../../utils/configTypes.ts";
 import type { Indexer } from "../../../utils/sqlite.ts";
+import { getErrorMessage } from "../../utils.ts";
 
 interface Props {
     config: Config;
@@ -117,8 +118,8 @@ export function IndexingSection({ config, onChange, onMethodChange }: Props) {
             setSelectedPreset("custom"); // Reset dropdown
             fetchIndexers(); // Refresh list
 
-        } catch (error: any) {
-            setLocalMessage({ text: error.message, type: "error" });
+        } catch (error) {
+            setLocalMessage({ text: getErrorMessage(error), type: "error" });
         } finally {
             setAddingIndexer(false);
             setTimeout(() => {

@@ -7,3 +7,7 @@ export interface State {
 }
 
 export const define = createDefine<State>();
+
+export function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}

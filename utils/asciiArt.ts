@@ -1,7 +1,6 @@
 // prettier-ignore
 // deno-fmt-ignore
 
-const PURPLE = "\x1b[35m";
 const CYAN = "\x1b[36m";
 const YELLOW = "\x1b[33m";
 const BLUE = "\x1b[34m";
@@ -40,6 +39,7 @@ function center(text: string): string {
         .split("\n")
         .map(line => {
             // Account for ANSI codes when calculating visible length
+            // deno-lint-ignore no-control-regex
             const visibleLength = line.replace(/\x1b\[[0-9;]*m/g, "").length;
             const padding = Math.max(0, (width - visibleLength) / 2) | 0;
             return " ".repeat(padding) + line;

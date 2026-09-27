@@ -320,7 +320,8 @@ function toReadyResult(
     };
 }
 
-async function waitForDistributedStream(
+// Pub/Sub distributed wait gives true 0-ms latency for shared stream tracking
+function waitForDistributedStream(
     streamCacheKey: string,
     category: string,
     signal?: AbortSignal,

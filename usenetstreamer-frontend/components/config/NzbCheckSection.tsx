@@ -1,5 +1,6 @@
 import { useState } from "preact/hooks";
 import { Config } from "../../utils/configTypes.ts";
+import { getErrorMessage } from "../../utils.ts";
 
 interface Props {
     config: Config;
@@ -48,9 +49,9 @@ export function NzbCheckSection({ config, onChange }: Props) {
             } else {
                 throw new Error(data.message || "Failed to generate key.");
             }
-        } catch (error: any) {
+        } catch (error) {
             console.error("Key Gen Error:", error);
-            setMessage({ text: "Error: " + (error.message || "Could not reach server"), type: "error" });
+            setMessage({ text: "Error: " + getErrorMessage(error), type: "error" });
         } finally {
             setGenerating(false);
         }

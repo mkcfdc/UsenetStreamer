@@ -237,7 +237,7 @@ export async function getStreamStatus(key: string): Promise<StreamStatus | null>
             fileName: res[4] || undefined,
         };
     } catch {
-        return getJsonValue<StreamStatus>(key) ?? null;
+        return (await getJsonValue<StreamStatus>(key)) ?? null;
     }
 }
 
