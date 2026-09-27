@@ -16,7 +16,7 @@ export const manifestRoute: RouteMatch = {
             id: "com.usenet.streamer",
             version: "1.0.1",
             name: "UsenetStreamer",
-            description: "Usenet-powered instant streams for Stremio via Prowlarr and NZBDav",
+            description: "Usenet-powered instant streams for Stremio via InfiniDysk",
             logo: `${Config.ADDON_BASE_URL.replace(/\/$/, "")}/assets/icon.png`,
             resources: ["stream"],
             types: ["movie", "series"],
