@@ -1,13 +1,24 @@
 # Local source build. `image: ghcr.io/mkcfdc/...:latest` is the published
 # tree and will NOT include the NZB addfile / wait fixes in this branch.
 services:
+  data-init:
+    image: alpine:3.20
+    user: "0:0"
+    volumes:
+      - usenet-data:/data
+    command: ["sh", "-c", "mkdir -p /data && chown -R 1000:1000 /data && chmod -R u+rwX /data"]
+    networks:
+      - media
   usenetstreamer:
     build:
       context: .
       dockerfile: Dockerfile
     image: usenetstreamer:local
+    user: "1000:1000"
     restart: unless-stopped
     depends_on:
+      data-init:
+        condition: service_completed_successfully
       nzbdav:
         condition: service_healthy
       redis:
@@ -26,8 +37,11 @@ services:
       context: .
       dockerfile: usenetstreamer-frontend/Dockerfile
     image: usenetstreamer-frontend:local
+    user: "1000:1000"
     restart: unless-stopped
     depends_on:
+      data-init:
+        condition: service_completed_successfully
       usenetstreamer:
         condition: service_started
     volumes:
@@ -101,9 +115,7 @@ services:
       PUID: "1000"
       PGID: "1000"
       TZ: America/Edmonton
-      # addurl fallback may fetch http://usenetstreamer:7000/nzb/proxy/...
       NZBDAV_CONFIG__API__ADDURL_TRUSTED_HOSTS: usenetstreamer,localhost
-      # First-byte / seek: pipelined BODY, share overlapping reads, warm pool on play
       NZBDAV_CONFIG__USENET__PIPELINED_BODY_REQUESTS: "true"
       NZBDAV_CONFIG__USENET__STREAMING_BODY_BATCH_WIDTH: "6"
       NZBDAV_CONFIG__USENET__STREAMING_PRIORITY: "90"
