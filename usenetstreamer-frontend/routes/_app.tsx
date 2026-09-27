@@ -6,51 +6,75 @@ export default define.page(function App({ Component }) {
       <head>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <meta
+          name="description"
+          content="UsenetStreamer is a self-hosted Stremio addon. It searches your indexers, queues NZBs, and proxies playback. Nothing is hosted here."
+        />
+        <meta name="theme-color" content="#0b0a08" />
         <title>UsenetStreamer</title>
+        <link rel="icon" href="/favicon.ico" />
+        <link rel="preconnect" href="https://fonts.bunny.net" />
+        <link rel="preconnect" href="https://images.unsplash.com" />
+        <link
+          rel="stylesheet"
+          href="https://fonts.bunny.net/css?family=ibm-plex-sans:400,500,600|instrument-serif:400,400i&display=swap"
+        />
       </head>
-      {/* Switched selection color to sky-500 */}
-      <body class="bg-slate-950 text-slate-200 antialiased selection:bg-sky-500 selection:text-white">
+      <body class="bg-night text-ink antialiased font-sans">
         <div class="min-h-screen flex flex-col">
-
-          {/* Navigation */}
-          <nav class="sticky top-0 z-50 border-b border-white/10 bg-slate-950/80 backdrop-blur-md">
-            <div class="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
-              <div class="flex items-center gap-3">
-                <div class="h-8 w-8 flex items-center justify-center rounded bg-sky-600 shadow-[0_0_15px_rgba(14,165,233,0.5)]">
-                  <span class="font-mono text-xs font-bold text-white">US</span>
-                </div>
-                <span class="text-lg font-bold tracking-tight text-white">UsenetStreamer</span>
-              </div>
-              <div class="hidden md:flex gap-8 text-sm font-medium text-slate-400">
-                <a href="#features" class="hover:text-sky-400 transition-colors">Features</a>
-                <a href="/configure" class="hover:text-sky-400 transition-colors">Configure</a>
-                <a href="#nzbcheck" class="hover:text-sky-400 transition-colors">NZBCheck</a>
-                <a href="https://github.com/mkcfdc/usenetstreamer" target="_blank" class="hover:text-white transition-colors">GitHub</a>
-              </div>
-              <div>
-                <a href="https://github.com/mkcfdc/usenetstreamer" class="rounded-full border border-white/10 bg-white/5 px-4 py-1.5 text-xs font-mono text-slate-300 transition-colors hover:bg-white/10">
-                  v2.5.0-deno
+          <header class="sticky top-0 z-50 border-b border-line bg-night/90 backdrop-blur-sm">
+            <div class="mx-auto flex max-w-6xl items-center justify-between px-5 py-3.5">
+              <a href="/" class="flex items-baseline gap-2 no-underline">
+                <span class="font-serif text-xl text-ink tracking-tight">UsenetStreamer</span>
+                <span class="hidden sm:inline text-[10px] uppercase tracking-[0.18em] text-faint">addon</span>
+              </a>
+              <nav class="flex items-center gap-6 text-[13px] text-mute">
+                <a href="/#how" class="hidden sm:inline hover:text-ink">How it works</a>
+                <a
+                  href="https://github.com/mkcfdc/usenetstreamer"
+                  target="_blank"
+                  rel="noreferrer"
+                  class="hover:text-ink"
+                >
+                  Source
                 </a>
-              </div>
+                <a
+                  href="/configure"
+                  class="rounded-sm bg-brass px-3 py-1.5 text-[12px] font-medium text-night hover:bg-brass-soft"
+                >
+                  Open console
+                </a>
+              </nav>
             </div>
-          </nav>
+          </header>
 
           <main class="flex-1">
             <Component />
-            {/* Footer / Disclaimer */}
-            <footer class="border-t border-white/10 bg-slate-950 py-12">
-              <div class="mx-auto max-w-6xl px-6 text-center">
-                <p class="text-slate-500 text-sm mb-4">
-                  UsenetStreamer is not affiliated with any Usenet provider or indexer.
-                  It does not host or distribute media.
-                </p>
-                <p class="text-slate-600 text-xs">
-                  Offered strictly for educational purposes. <br />
-                  &copy; {new Date().getFullYear()} UsenetStreamer Project.
+          </main>
+
+          <footer class="border-t border-line">
+            <div class="mx-auto grid max-w-6xl gap-10 px-5 py-12 md:grid-cols-3">
+              <div>
+                <p class="font-serif text-lg text-ink">UsenetStreamer</p>
+                <p class="mt-2 max-w-xs text-sm leading-relaxed text-mute">
+                  A local Stremio addon. It talks to your indexers and InfiniDysk.
+                  It does not host or ship media.
                 </p>
               </div>
-            </footer>
-          </main>
+              <div class="text-sm text-mute space-y-2">
+                <p class="kicker">Product</p>
+                <a href="/configure" class="block hover:text-ink">Configuration console</a>
+                <a href="/login" class="block hover:text-ink">Sign in</a>
+                <a href="https://github.com/mkcfdc/usenetstreamer" class="block hover:text-ink">GitHub</a>
+              </div>
+              <div class="text-sm text-mute space-y-2">
+                <p class="kicker">Notes</p>
+                <p>Not affiliated with any Usenet provider, indexer, or Stremio.</p>
+                <p>Photos from Unsplash. Type from Bunny Fonts.</p>
+                <p class="text-faint">© {new Date().getFullYear()}</p>
+              </div>
+            </div>
+          </footer>
         </div>
       </body>
     </html>

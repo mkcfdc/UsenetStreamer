@@ -14,16 +14,16 @@ async function checkRedis(url: string): Promise<Chip> {
 }
 
 async function checkNzbDav(url: string, apiKey: string): Promise<Chip> {
-    if (!url) return { ok: false, label: "NZBDav", detail: "Not configured" };
+    if (!url) return { ok: false, label: "InfiniDysk", detail: "Not configured" };
     try {
         const base = url.replace(/\/$/, "");
         const testUrl = `${base}/api?mode=version&apikey=${encodeURIComponent(apiKey || "")}&output=json`;
         const res = await fetch(testUrl, { signal: AbortSignal.timeout(4000) });
-        if (!res.ok) return { ok: false, label: "NZBDav", detail: `HTTP ${res.status}` };
+        if (!res.ok) return { ok: false, label: "InfiniDysk", detail: `HTTP ${res.status}` };
         const data = await res.json().catch(() => ({}));
-        return { ok: true, label: "NZBDav", detail: data.version ? `v${data.version}` : "OK" };
+        return { ok: true, label: "InfiniDysk", detail: data.version ? `v${data.version}` : "OK" };
     } catch (e) {
-        return { ok: false, label: "NZBDav", detail: e instanceof Error ? e.message : "Unreachable" };
+        return { ok: false, label: "InfiniDysk", detail: e instanceof Error ? e.message : "Unreachable" };
     }
 }
 
