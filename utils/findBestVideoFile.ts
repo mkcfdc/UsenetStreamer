@@ -61,8 +61,6 @@ export async function findBestVideoFile(
 ): Promise<FileCandidate | null> {
     const cacheKey = webdavCacheKey(params);
     const cached = await getJsonValue<FileCandidate & { pending?: boolean }>(cacheKey);
-    // Partial-file polls must keep walking. A 10s miss cache here added
-    // ~10s to first-byte while the NZBDav file was already growing.
     if (cached?.viewPath) return cached;
     if (cached?.pending && !params.allowPartial) return null;
 
@@ -90,4 +88,130 @@ export async function findBestVideoFile(
         setJsonValue(cacheKey, "$", { pending: true }, WEBDAV_MISS_TTL_SEC).catch(() => {});
     }
     return found;
+}
+
+async function findStrmCandidate(
+    { category, jobName, requestedEpisode }: FindFileParams,
+): Promise<FileCandidate | null> {
+    const safeJobName = jobName.replace(/^\/|\/$/g, "");
+    const strmDir = `/strm/content/${category}/${safeJobName}`;
+    const episodeRegex = getEpisodeRegex(requestedEpisode);
+    let bestGeneric: FileCandidate | null = null;
+
+    try {
+        for await (const entry of Deno.readDir(strmDir)) {
+            if (!entry.isFile || !entry.name.endsWith(".strm")) continue;
+            const matchesEpisode = episodeRegex ? episodeRegex.test(entry.name) : true;
+            if (!matchesEpisode && bestGeneric) continue;
+            try {
+                const content = await Deno.readTextFile(`${strmDir}/${entry.name}`);
+                if (!content) continue;
+                const url = new URL(content.trim());
+                const rawPath = url.searchParams.get("path") || url.pathname.replace("/webdav", "");
+                const candidate: FileCandidate = {
+                    viewPath: content.replace(/^https?:\/\/[^/]+/, publicBaseUrl()),
+                    absolutePath: rawPath,
+                    name: entry.name.slice(0, -5),
+                    size: 0,
+                    matchesEpisode,
+                };
+                if (matchesEpisode) return candidate;
+                bestGeneric = candidate;
+            } catch {
+                continue;
+            }
+        }
+        return bestGeneric;
+    } catch {
+        return null;
+    }
+}
+
+export async function findWebdavCandidate(
+    { category, jobName, requestedEpisode, allowPartial }: FindFileParams,
+): Promise<FileCandidate | null> {
+    const client = getWebdavClient();
+    const rootPath = normalizeNzbdavPath(`/content/${category}/${jobName}`).replace(/\/$/, "");
+    const episodeRegex = getEpisodeRegex(requestedEpisode);
+    const queue: Array<{ path: string; depth: number }> = [{ path: rootPath, depth: 0 }];
+    let queueIdx = 0;
+    const visited = new Set<string>();
+    const processing = new Set<Promise<void>>();
+    let done = false;
+    let bestEpisode: FileCandidate | null = null;
+    let bestGeneric: FileCandidate | null = null;
+    const minSampleBytes = allowPartial ? SAMPLE_MIN_BYTES_PARTIAL : SAMPLE_MIN_BYTES_FULL;
+
+    function isSampleLike(name: string, size: number): boolean {
+        if (size >= minSampleBytes) return false;
+        return SAMPLE_WORD_RX.test(name);
+    }
+
+    function maxConcurrencyForDepth(depth: number): number {
+        if (depth <= 0) return Math.min(2, MAX_CONCURRENT_REQUESTS);
+        if (depth === 1) return Math.min(3, MAX_CONCURRENT_REQUESTS);
+        return MAX_CONCURRENT_REQUESTS;
+    }
+
+    const processDirectory = async (path: string, depth: number) => {
+        if (done) return;
+        const key = path.endsWith("/") ? path : `${path}/`;
+        if (visited.has(key)) return;
+        visited.add(key);
+        const entries = await client.getDirectoryContents(path);
+        if (done) return;
+        const sep = path.endsWith("/") ? "" : "/";
+        for (let i = 0; i < entries.length; i++) {
+            if (done) return;
+            const entry = entries[i];
+            if (entry.isDirectory) {
+                if (depth < Config.NZBDAV_MAX_DIRECTORY_DEPTH) {
+                    queue.push({ path: `${path}${sep}${entry.name}`, depth: depth + 1 });
+                }
+                continue;
+            }
+            const name = entry.name || "";
+            const dotIdx = name.lastIndexOf(".");
+            if (dotIdx === -1) continue;
+            const ext = name.slice(dotIdx + 1).toLowerCase();
+            if (!VIDEO_EXTS.has(ext)) continue;
+            const size = Number(entry.size) || 0;
+            if (isSampleLike(name, size)) continue;
+            const matchesEpisode = episodeRegex ? episodeRegex.test(name) : true;
+            if (matchesEpisode) {
+                if (bestEpisode && size <= bestEpisode.size) continue;
+            } else if (bestGeneric && size <= bestGeneric.size) {
+                continue;
+            }
+            const fullPath = `${path}${sep}${name}`;
+            const candidate: FileCandidate = {
+                name,
+                size,
+                matchesEpisode,
+                absolutePath: fullPath,
+                viewPath: fullPath.startsWith("/") ? fullPath.slice(1) : fullPath,
+            };
+            if (matchesEpisode) bestEpisode = candidate;
+            else bestGeneric = candidate;
+            if (allowPartial) {
+                const pick = episodeRegex ? bestEpisode : (bestEpisode || bestGeneric);
+                if (pick && pick.size >= PROGRESSIVE_GOOD_ENOUGH_BYTES) done = true;
+            }
+        }
+    };
+
+    while (!done && (queueIdx < queue.length || processing.size > 0)) {
+        while (!done && queueIdx < queue.length) {
+            const next = queue[queueIdx];
+            if (processing.size >= maxConcurrencyForDepth(next.depth)) break;
+            queueIdx++;
+            const task = processDirectory(next.path, next.depth).finally(() => {
+                processing.delete(task);
+            });
+            processing.add(task);
+        }
+        if (processing.size > 0) await Promise.race(processing);
+    }
+
+    return bestEpisode || bestGeneric || null;
 }
