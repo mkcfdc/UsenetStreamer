@@ -61,8 +61,8 @@ export async function findBestVideoFile(
 ): Promise<FileCandidate | null> {
     const cacheKey = webdavCacheKey(params);
     const cached = await getJsonValue<FileCandidate & { pending?: boolean }>(cacheKey);
-    if (cached?.pending) return null;
     if (cached?.viewPath) return cached;
+    if (cached?.pending && !params.allowPartial) return null;
 
     let found: FileCandidate | null = null;
 
@@ -84,7 +84,7 @@ export async function findBestVideoFile(
 
     if (found?.viewPath) {
         setJsonValue(cacheKey, "$", found, WEBDAV_TTL_SEC).catch(() => {});
-    } else {
+    } else if (!params.allowPartial) {
         setJsonValue(cacheKey, "$", { pending: true }, WEBDAV_MISS_TTL_SEC).catch(() => {});
     }
     return found;

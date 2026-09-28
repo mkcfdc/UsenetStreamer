@@ -83,10 +83,13 @@ export function getOrSetSetting(key: string, defaultValue: string, description: 
         return row.value;
     }
 
-    // 3. Fallback to Default & Persist to DB
-    // We insert the default so it becomes editable in the DB for next time
-    const stmt = db.prepare("INSERT OR IGNORE INTO settings (key, value, description) VALUES (?, ?, ?)");
-    stmt.run(key, defaultValue, description);
+    try {
+        const stmt = db.prepare("INSERT OR IGNORE INTO settings (key, value, description) VALUES (?, ?, ?)");
+        stmt.run(key, defaultValue, description);
+    } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn(`[Database] Could not persist default for ${key}: ${message}`);
+    }
 
     setCachedSetting(key, defaultValue);
     return defaultValue;
