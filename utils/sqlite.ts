@@ -1,5 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { join } from "@std/path";
+import { SCHEMA_SQL, SQLITE_PRAGMAS } from "../shared/schema.ts";
+import { getCachedSetting, setCachedSetting } from "../shared/settingsCache.ts";
 
 let dbInstance: DatabaseSync | null = null;
 
@@ -16,43 +18,42 @@ function getDb(): DatabaseSync {
     try {
         Deno.mkdirSync(dataDir, { recursive: true });
         console.log(`%c[Database] %cEnsured data directory exists: ${dataDir}`, "color: blue;", "color: yellow;");
-    } catch (e) {
-        if (e instanceof Deno.errors.AlreadyExists) {
+    } catch (error) {
+        if (error instanceof Deno.errors.AlreadyExists) {
             // Directory already exists, which is fine
         } else {
-            console.error(`%c[Database] %cFailed to create data directory: ${dataDir}, Error: ${e.message}`, "color: blue;", "color: red;");
-            throw e;
+            const message = error instanceof Error ? error.message : String(error);
+            console.error(`%c[Database] %cFailed to create data directory: ${dataDir}, Error: ${message}`, "color: blue;", "color: red;");
+            throw error;
         }
     }
 
     console.log(`\n%c[Database] %cInitializing sqlite at: ${dbPath}`, "color: blue;", "color: green;");
 
     const db = new DatabaseSync(dbPath);
+    db.exec(SQLITE_PRAGMAS);
+    db.exec(SCHEMA_SQL);
 
-    // Initialize schema
     db.exec(`
-    CREATE TABLE IF NOT EXISTS indexers (
+    CREATE TABLE IF NOT EXISTS nntp_servers (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
-      url TEXT NOT NULL,
-      api_key TEXT NOT NULL,
-      enabled INTEGER DEFAULT 1  
-    ) STRICT
-  `);
-
-    db.exec(`
-    CREATE TABLE IF NOT EXISTS settings (
-      key TEXT PRIMARY KEY,
-      value TEXT,
-      description TEXT
+      name TEXT NOT NULL UNIQUE,
+      host TEXT NOT NULL,
+      port INTEGER NOT NULL,
+      username TEXT,
+      password TEXT,
+      ssl INTEGER NOT NULL DEFAULT 1,
+      connection_count INTEGER NOT NULL DEFAULT 4,
+      priority INTEGER NOT NULL DEFAULT 0,
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT (STRFTIME('%Y-%m-%d %H:%M:%S', 'now')),
+      updated_at TEXT NOT NULL DEFAULT (STRFTIME('%Y-%m-%d %H:%M:%S', 'now'))
     ) STRICT;
   `);
 
     dbInstance = db;
     return db;
 }
-
-// --- Exported Functions ---
 
 export interface Setting {
     key: string;
@@ -65,48 +66,39 @@ export const getAllSettings = (): Setting[] => {
     return stmt.all() as unknown as Setting[];
 };
 
-/**
- * Retrieves a configuration value following this priority:
- * 1. System Environment Variable (Overrides everything)
- * 2. Database Value
- * 3. Default Value (Persisted to DB if not present)
- */
 export function getOrSetSetting(key: string, defaultValue: string, description: string = ""): string {
-    // 1. Check System Environment Variable (Highest Priority)
-    // We check this first so you can override DB settings via Docker/CLI without wiping the DB
     const envVal = Deno.env.get(key);
     if (envVal !== undefined) {
         return envVal;
     }
 
-    const db = getDb();
+    const cached = getCachedSetting(key);
+    if (cached !== undefined) return cached;
 
-    // 2. Check Database
+    const db = getDb();
     const row = db.prepare("SELECT value FROM settings WHERE key = ?").get(key) as { value: string } | undefined;
 
     if (row) {
+        setCachedSetting(key, row.value);
         return row.value;
     }
 
-    // 3. Fallback to Default & Persist to DB
-    // We insert the default so it becomes editable in the DB for next time
     try {
-        const stmt = db.prepare("INSERT INTO settings (key, value, description) VALUES (?, ?, ?)");
+        const stmt = db.prepare("INSERT OR IGNORE INTO settings (key, value, description) VALUES (?, ?, ?)");
         stmt.run(key, defaultValue, description);
     } catch (err) {
-        // Ignore race conditions (SQLITE_CONSTRAINT)
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn(`[Database] Could not persist default for ${key}: ${message}`);
     }
 
+    setCachedSetting(key, defaultValue);
     return defaultValue;
 }
 
-/**
- * Updates a setting in the database.
- * This allows you to build an API endpoint later to update config via UI.
- */
 export function updateSetting(key: string, value: string) {
     const db = getDb();
     db.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(key, value);
+    setCachedSetting(key, value);
 }
 
 export interface Indexer {
@@ -114,7 +106,7 @@ export interface Indexer {
     name: string;
     url: string;
     api_key: string;
-    enabled: number; // SQLite stores booleans as 0/1
+    enabled: number;
 }
 
 export const getEnabledIndexers = (): Indexer[] => {
@@ -150,7 +142,6 @@ export const closeDb = () => {
     }
 };
 
-
 export interface NntpServer {
     id: number;
     name: string;
@@ -158,20 +149,20 @@ export interface NntpServer {
     port: number;
     username?: string;
     password?: string;
-    ssl: number; // 0 or 1
+    ssl: number;
     connection_count: number;
     priority: number;
-    active: number; // 0 or 1 (Using 1 for active)
+    active: number;
 }
 
 export const getAllNntpServers = (): NntpServer[] => {
-    const stmt = getDb().prepare("SELECT * FROM nntp_servers ORDER BY priority ASC, name ASC"); // Changed to ASC priority (usually 0 is highest in Usenet/SABnzbd logic, or DESC if you prefer)
+    const stmt = getDb().prepare("SELECT * FROM nntp_servers ORDER BY priority ASC, name ASC");
     return stmt.all() as unknown as NntpServer[];
 };
 
-export const addNntpServer = (server: Omit<NntpServer, 'id' | 'active' | 'created_at' | 'updated_at'>) => {
+export const addNntpServer = (server: Omit<NntpServer, "id" | "active" | "created_at" | "updated_at">) => {
     const stmt = getDb().prepare(`
-        INSERT INTO nntp_servers (name, host, port, username, password, ssl, connection_count, priority, active) 
+        INSERT INTO nntp_servers (name, host, port, username, password, ssl, connection_count, priority, active)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
     `);
     stmt.run(
@@ -196,18 +187,11 @@ export const toggleNntpServer = (id: number, active: boolean) => {
     stmt.run(active ? 1 : 0, id);
 };
 
-/**
- * Fetches active NNTP server configurations from the database
- * and converts them into connection strings.
- * Format: protocol://user:pass@host:port/connections
- */
 export function getActiveNntpServerUrls(): string[] {
     const db = getDb();
     const serverUrls: string[] = [];
 
     try {
-        // Query active servers. 
-        // Ordering: Priority ASC (0 is highest/first), then by ID.
         const stmt = db.prepare(`
             SELECT host, port, username, password, ssl, connection_count
             FROM nntp_servers
@@ -215,27 +199,25 @@ export function getActiveNntpServerUrls(): string[] {
             ORDER BY priority ASC, id ASC
         `);
 
-        const rows = stmt.all() as any[];
+        const rows = stmt.all() as unknown as Array<{
+            host: string;
+            port: number;
+            username: string | null;
+            password: string | null;
+            ssl: number;
+            connection_count: number;
+        }>;
 
         for (const row of rows) {
             const { host, port, username, password, ssl, connection_count } = row;
-
-            // 1. Determine Protocol
-            const protocol = ssl === 1 ? 'nntps' : 'nntp';
-
-            // 2. Build Auth Part (Encode to handle special chars in passwords)
-            let authPart = '';
+            const protocol = ssl === 1 ? "nntps" : "nntp";
+            let authPart = "";
             if (username && password) {
                 authPart = `${encodeURIComponent(username)}:${encodeURIComponent(password)}@`;
             } else if (username) {
                 authPart = `${encodeURIComponent(username)}@`;
             }
-
-            // 3. Connection Limit
-            // Many streaming libraries accept the connection count as the path segment
             const connections = connection_count > 0 ? connection_count : 1;
-
-            // 4. Construct URL
             serverUrls.push(`${protocol}://${authPart}${host}:${port}/${connections}`);
         }
     } catch (error) {

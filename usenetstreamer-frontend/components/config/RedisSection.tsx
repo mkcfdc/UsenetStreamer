@@ -1,5 +1,6 @@
 import { useState } from "preact/hooks";
 import { Config } from "../../utils/configTypes.ts";
+import { getErrorMessage } from "../../utils.ts";
 
 interface Props {
     config: Config;
@@ -21,7 +22,6 @@ export function RedisSection({ config, onChange }: Props) {
             return;
         }
 
-        // Basic format validation
         if (!config.REDIS_URL.startsWith("redis://") && !config.REDIS_URL.startsWith("rediss://")) {
             setTestResult({
                 success: false,
@@ -32,7 +32,6 @@ export function RedisSection({ config, onChange }: Props) {
         }
 
         try {
-            // Assuming you have an endpoint to test redis connectivity
             const response = await fetch("/api/test_redis", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -44,9 +43,9 @@ export function RedisSection({ config, onChange }: Props) {
             const data = await response.json();
             setTestResult(data);
 
-        } catch (error: any) {
+        } catch (error) {
             console.error("Redis Test failed", error);
-            setTestResult({ success: false, message: "Server Error: " + error.message });
+            setTestResult({ success: false, message: "Server Error: " + getErrorMessage(error) });
         } finally {
             setTesting(false);
         }
@@ -71,7 +70,6 @@ export function RedisSection({ config, onChange }: Props) {
                 </button>
             </div>
 
-            {/* Test Result Display */}
             {testResult && (
                 <div class={`mb-6 p-3 rounded-lg border ${testResult.success ? 'bg-green-500/10 border-green-500/30 text-green-300' : 'bg-red-500/10 border-red-500/30 text-red-300'}`}>
                     <div class="flex items-center gap-2 font-bold text-sm mb-1">
@@ -96,7 +94,7 @@ export function RedisSection({ config, onChange }: Props) {
                         value={config.REDIS_URL}
                         onChange={onChange}
                         required
-                        placeholder="redis://:password@localhost:6379"
+                        placeholder="redis://redis:6379"
                         class="w-full p-3 pr-10 rounded-lg bg-slate-800 border border-white/10 text-white focus:ring-2 focus:ring-teal-500 outline-none"
                     />
                     <button
@@ -113,7 +111,8 @@ export function RedisSection({ config, onChange }: Props) {
                     </button>
                 </div>
                 <p class="mt-2 text-xs text-slate-500">
-                    Format: <code class="bg-slate-700/50 px-1 py-0.5 rounded text-teal-400">redis://:password@host:port</code> or <code class="bg-slate-700/50 px-1 py-0.5 rounded text-teal-400">rediss://</code> for TLS.
+                    In Docker Compose use <code class="bg-slate-700/50 px-1 py-0.5 rounded text-teal-400">redis://redis:6379</code>
+                    (service name, not the host LAN IP). Format: <code class="bg-slate-700/50 px-1 py-0.5 rounded text-teal-400">redis://:password@host:port</code> or <code class="bg-slate-700/50 px-1 py-0.5 rounded text-teal-400">rediss://</code> for TLS.
                 </p>
             </div>
         </fieldset>

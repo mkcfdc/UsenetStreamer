@@ -3,8 +3,9 @@ import "./utils/asciiArt.ts";
 import { Config, validateConfig } from "./env.ts";
 import { jsonResponse } from "./utils/responseUtils.ts";
 import { routes } from "./routes/index.ts";
+import { closeRedis } from "./utils/redis.ts";
+import { closeDb } from "./utils/sqlite.ts";
 
-// --- CORS HEADERS ---
 const CORS_HEADERS = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
@@ -12,7 +13,6 @@ const CORS_HEADERS = {
     "Access-Control-Max-Age": "86400",
 };
 
-// --- CORS OPTIONS HANDLER ---
 function handleCors(): Response {
     return new Response(null, {
         status: 204,
@@ -20,7 +20,6 @@ function handleCors(): Response {
     });
 }
 
-// --- ROOT HANDLER ---
 function handleRoot(): Response {
     return new Response(
         "Hello, the server is running! This is using the mkcfdc version of UsenetStreamer by Sanket9225.",
@@ -28,22 +27,18 @@ function handleRoot(): Response {
     );
 }
 
-// --- MAIN HANDLER ---
 async function handler(req: Request): Promise<Response> {
     const method = req.method;
     const url = new URL(req.url);
 
-    // --- GLOBAL CORS (OPTIONS) ---
     if (method === "OPTIONS") {
         return handleCors();
     }
 
-    // --- ROOT CHECK ---
     if (url.pathname === "/" && method === "GET") {
         return handleRoot();
     }
 
-    // --- ROUTE MATCHING ---
     for (const route of routes) {
         const match = route.pattern.exec(url);
         if (match && route.methods.includes(method)) {
@@ -56,11 +51,9 @@ async function handler(req: Request): Promise<Response> {
         }
     }
 
-    // --- 404 NOT FOUND ---
     return jsonResponse({ error: "Not found" }, 404);
 }
 
-// --- MAINTENANCE MODE HANDLER ---
 function maintenanceHandler(): Response {
     return new Response(
         `[System Maintenance] Configuration required.\nMissing: ${validateConfig().join(", ")}\nUse the manage cli tool!`,
@@ -68,21 +61,50 @@ function maintenanceHandler(): Response {
     );
 }
 
-// --- BOOTSTRAP ---
-const missingKeys = validateConfig();
 const port = Config.PORT;
+let readyLogged = false;
 
-if (missingKeys.length > 0) {
+function appHandler(req: Request): Promise<Response> | Response {
+    const missing = validateConfig();
+    if (missing.length > 0) {
+        readyLogged = false;
+        return maintenanceHandler();
+    }
+    if (!readyLogged) {
+        readyLogged = true;
+        console.log("✅ %cConfiguration valid. Serving requests...", "color: green");
+        console.log(
+            "Install url: ",
+            `${Config.ADDON_BASE_URL.replace(/\/$/, "")}/${Config.ADDON_SHARED_SECRET}/manifest.json`,
+        );
+    }
+    return handler(req);
+}
+
+const startupMissing = validateConfig();
+if (startupMissing.length > 0) {
     console.error("❌ CRITICAL CONFIGURATION MISSING");
-    console.error(`Missing: ${missingKeys.join(", ")}`);
-    console.error("⚠️  Server started in MAINTENANCE MODE. Run: manage");
-
-    Deno.serve({ port }, maintenanceHandler);
+    console.error(`Missing: ${startupMissing.join(", ")}`);
+    console.error("⚠️  Serving maintenance responses until config is saved.");
 } else {
+    readyLogged = true;
     console.log("✅ %cConfiguration valid. Starting application...", "color: green");
     console.log(
         "Install url: ",
         `${Config.ADDON_BASE_URL.replace(/\/$/, "")}/${Config.ADDON_SHARED_SECRET}/manifest.json`,
     );
-    Deno.serve({ port }, handler);
 }
+
+Deno.serve({ port }, appHandler);
+
+async function shutdown() {
+    try { await closeRedis(); } catch { /* ignore */ }
+    try { closeDb(); } catch { /* ignore */ }
+}
+
+Deno.addSignalListener("SIGINT", () => {
+    shutdown().finally(() => Deno.exit(0));
+});
+Deno.addSignalListener("SIGTERM", () => {
+    shutdown().finally(() => Deno.exit(0));
+});

@@ -5,7 +5,7 @@ import type { RouteMatch } from "./types.ts";
 export const manifestRoute: RouteMatch = {
     pattern: new URLPattern({ pathname: "/:apiKey/manifest.json" }),
     methods: ["GET"],
-    handler: async (_req: Request, match: URLPatternResult): Promise<Response> => {
+    handler: (_req: Request, match: URLPatternResult) => {
         const apiKey = match.pathname.groups.apiKey;
 
         if (apiKey !== Config.ADDON_SHARED_SECRET) {
@@ -16,7 +16,7 @@ export const manifestRoute: RouteMatch = {
             id: "com.usenet.streamer",
             version: "1.0.1",
             name: "UsenetStreamer",
-            description: "Usenet-powered instant streams for Stremio via Prowlarr and NZBDav",
+            description: "Usenet-powered instant streams for Stremio via InfiniDysk",
             logo: `${Config.ADDON_BASE_URL.replace(/\/$/, "")}/assets/icon.png`,
             resources: ["stream"],
             types: ["movie", "series"],

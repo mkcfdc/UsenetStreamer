@@ -16,11 +16,13 @@
     }
   },
   "exclude": [
-    "**/_fresh/*"
+    "**/_fresh/*",
+    "vite.config.ts.timestamp-*.mjs"
   ],
   "imports": {
     "@/": "./",
-    "@db/redis": "jsr:@db/redis@^0.40.0",
+    "@shared/": "../shared/",
+    "ioredis": "npm:ioredis@^5.11.1",
     "@std/http": "jsr:@std/http@^1.0.22",
     "bcryptjs": "npm:bcryptjs@^3.0.3",
     "fresh": "jsr:@fresh/core@^2.2.0",

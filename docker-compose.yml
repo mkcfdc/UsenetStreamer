@@ -1,8 +1,24 @@
+# Local source build. `image: ghcr.io/mkcfdc/...:latest` is the published
+# tree and will NOT include the NZB addfile / wait fixes in this branch.
 services:
+  data-init:
+    image: alpine:3.20
+    user: "0:0"
+    volumes:
+      - usenet-data:/data
+    command: ["sh", "-c", "mkdir -p /data && chown -R 1000:1000 /data && chmod -R u+rwX /data"]
+    networks:
+      - media
   usenetstreamer:
-    image: ghcr.io/mkcfdc/usenetstreamer:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: usenetstreamer:local
+    user: "1000:1000"
     restart: unless-stopped
     depends_on:
+      data-init:
+        condition: service_completed_successfully
       nzbdav:
         condition: service_healthy
       redis:
@@ -17,9 +33,15 @@ services:
       - media
   ### YOU ONLY NEED THE FRONTEND FOR CONFIGURATION.... AFTER YOUR CONFIGURED, YOU CAN REMOVE IT.
   usenetstreamer-frontend:
-    image: ghcr.io/mkcfdc/usenetstreamer-frontend:latest
+    build:
+      context: .
+      dockerfile: usenetstreamer-frontend/Dockerfile
+    image: usenetstreamer-frontend:local
+    user: "1000:1000"
     restart: unless-stopped
     depends_on:
+      data-init:
+        condition: service_completed_successfully
       usenetstreamer:
         condition: service_started
     volumes:
@@ -30,11 +52,21 @@ services:
       - media
   redis:
     image: redis:8.2.3-alpine
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --maxmemory
+      - 256mb
+      - --maxmemory-policy
+      - allkeys-lru
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - redis-data:/data
     networks:
       - media
     restart: unless-stopped
@@ -62,15 +94,45 @@ services:
     networks:
       - media
 
+## InfiniDysk is the maintained NzbDAV fork (nzbdav-dev is archived).
+## Keep the Compose service name `nzbdav` so NZBDAV_URL=http://nzbdav:3000 stays valid.
+## Same /config volume as old nzbdav — back it up once, then swap the image.
+## Do not run InfiniDysk and altMount at the same time.
 
-## Have your pick of nzbDav or altMount or direct api using the manage cli tool. Details in README.
-## Both cannot be used at the same time.
+  nzbdav:
+    image: ghcr.io/infinidysk/infinidysk:latest
+    container_name: nzbdav
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsSL http://localhost:3000/healthz > /dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    ports:
+      - "3000:3000"
+    environment:
+      PUID: "1000"
+      PGID: "1000"
+      TZ: America/Edmonton
+      NZBDAV_CONFIG__API__ADDURL_TRUSTED_HOSTS: usenetstreamer,localhost
+      NZBDAV_CONFIG__USENET__PIPELINED_BODY_REQUESTS: "true"
+      NZBDAV_CONFIG__USENET__STREAMING_BODY_BATCH_WIDTH: "6"
+      NZBDAV_CONFIG__USENET__STREAMING_PRIORITY: "90"
+      NZBDAV_CONFIG__USENET__SHARED_STREAMS__ENABLED: "true"
+      NZBDAV_CONFIG__USENET__READ_START_WARMUP__ENABLED: "true"
+      NZBDAV_CONFIG__USENET__SEGMENT_CACHE__ENABLED: "true"
+    volumes:
+      - ./nzbdav:/config
+    networks:
+      - media
 
   altmount:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     image: ghcr.io/javi11/altmount:latest
     container_name: altmount
+    profiles: ["altmount"]
     environment:
       - PUID=1000
       - PGID=1000
@@ -82,27 +144,9 @@ services:
     networks:
       - media
 
-  nzbdav:
-    image: nzbdav/nzbdav:alpha
-    container_name: nzbdav
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-    ports:
-      - "3000:3000"
-    environment:
-      PUID: "1000"
-      PGID: "1000"
-    volumes:
-      - ./nzbdav:/config
-    networks:
-      - media
-
 networks:
   media:
     driver: bridge
 volumes:
   usenet-data:
+  redis-data:

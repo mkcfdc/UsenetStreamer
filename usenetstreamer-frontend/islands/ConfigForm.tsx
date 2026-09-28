@@ -7,6 +7,8 @@ import { NzbCheckSection } from "../components/config/NzbCheckSection.tsx";
 import { InstallSection } from "../components/config/InstallSection.tsx";
 import { RedisSection } from "../components/config/RedisSection.tsx";
 import { StremioNNTPSection } from "../components/config/StremioNntpSection.tsx";
+import { HealthChips } from "../components/config/HealthChips.tsx";
+import { getErrorMessage } from "../utils.ts";
 
 const FeatureFlagsSection = ({ config, onChange }: { config: Config, onChange: (e: Event) => void }) => (
     <fieldset class="mb-10 pb-8 border-b border-white/5">
@@ -19,7 +21,7 @@ const FeatureFlagsSection = ({ config, onChange }: { config: Config, onChange: (
                 <label htmlFor="USE_STRM_FILES" class="toggle-label block overflow-hidden h-6 rounded-full bg-slate-700 cursor-pointer"></label>
             </div>
         </div>
-        <div class="flex items-center justify-between p-4 bg-slate-800 rounded-lg border border-white/10">
+        <div class="flex items-center justify-between p-4 bg-slate-800 rounded-lg border border-white/10 mt-3">
             <label htmlFor="USE_STREMIO_NNTP" class="text-sm font-medium text-slate-300">Enable Stremio NNTP support (Experimental)</label>
             <div class="relative inline-block w-12 mr-2 align-middle select-none transition duration-200 ease-in">
                 <input type="checkbox" name="USE_STREMIO_NNTP" id="USE_STREMIO_NNTP" checked={config.USE_STREMIO_NNTP} onChange={onChange}
@@ -27,7 +29,6 @@ const FeatureFlagsSection = ({ config, onChange }: { config: Config, onChange: (
                 <label htmlFor="USE_STREMIO_NNTP" class="toggle-label block overflow-hidden h-6 rounded-full bg-slate-700 cursor-pointer"></label>
             </div>
         </div>
-        <style dangerouslySetInnerHTML={{ __html: `.toggle-checkbox:checked { right: 0; border-color: #06b6d4; } .toggle-checkbox:checked + .toggle-label { background-color: #06b6d4; } .toggle-label { box-shadow: inset 0 0 0 9999px #1e293b; }` }} />
     </fieldset>
 );
 
@@ -47,7 +48,7 @@ export default function ConfigForm() {
             const res = await fetch("/api/config");
             if (!res.ok) throw new Error("Failed");
             setConfig(await res.json());
-        } catch (e: any) { setMessage({ text: e.message, type: "error" }); }
+        } catch (e) { setMessage({ text: getErrorMessage(e), type: "error" }); }
         finally { setLoading(false); }
     };
 
@@ -59,25 +60,19 @@ export default function ConfigForm() {
     const handleIndexingMethodChange = (method: IndexingMethod) => {
         setConfig((prev) => {
             if (!prev) return null;
-
             const updated = { ...prev, INDEXING_METHOD: method };
-
-            if (method === 'direct') {
+            if (method === "direct") {
                 updated.PROWLARR_URL = "";
                 updated.PROWLARR_API_KEY = "";
                 updated.NZBHYDRA_URL = "";
                 updated.NZBHYDRA_API_KEY = "";
-            }
-            else if (method === 'prowlarr') {
+            } else if (method === "prowlarr") {
                 updated.NZBHYDRA_URL = "";
                 updated.NZBHYDRA_API_KEY = "";
-            }
-            else if (method === 'nzbhydra2') {
-                // If Hydra: Clear Prowlarr
+            } else if (method === "nzbhydra2") {
                 updated.PROWLARR_URL = "";
                 updated.PROWLARR_API_KEY = "";
             }
-
             return updated;
         });
     };
@@ -94,7 +89,7 @@ export default function ConfigForm() {
             });
             if (!res.ok) throw new Error("Failed to save");
             setMessage({ text: "Configuration saved successfully!", type: "success" });
-        } catch (e: any) { setMessage({ text: e.message, type: "error" }); }
+        } catch (e) { setMessage({ text: getErrorMessage(e), type: "error" }); }
         finally { setSaving(false); setTimeout(() => setMessage(null), 3000); }
     };
 
@@ -102,7 +97,8 @@ export default function ConfigForm() {
     if (!config) return <div class="text-center text-red-400">Failed to load. <button type="button" onClick={fetchConfig} class="underline">Retry</button></div>;
 
     return (
-        <form onSubmit={handleSubmit} class="bg-slate-900 rounded-2xl shadow-xl border border-white/10 p-8 sm:p-10">
+        <form onSubmit={handleSubmit} class="bg-slate-900/80 backdrop-blur rounded-2xl shadow-xl border border-white/10 p-6 sm:p-10">
+            <HealthChips />
             {message && (
                 <div class={`mb-6 p-4 rounded-lg text-sm font-medium ${message.type === "success" ? "bg-green-500/20 text-green-300 border-green-500/30 border" : "bg-red-500/20 text-red-300 border-red-500/30 border"}`}>
                     {message.text}

@@ -16,6 +16,8 @@ export interface Config {
     USE_STREMIO_NNTP: boolean;
     INDEXING_METHOD: string;
     REDIS_URL: string;
+    /** Keys present in process env. Those values win over SQLite and the form cannot change them. */
+    lockedKeys?: string[];
 }
 
-export type IndexingMethod = 'prowlarr' | 'nzbhydra2' | 'direct';
+export type IndexingMethod = "prowlarr" | "nzbhydra2" | "direct";

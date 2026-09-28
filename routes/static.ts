@@ -33,7 +33,5 @@ export const staticIconRoute: RouteMatch = {
 export const staticIconRouteWithPrefix: RouteMatch = {
   pattern: new URLPattern({ pathname: "/:apiKey/assets/icon.png" }),
   methods: ["GET"],
-  handler: async (req: Request, match: URLPatternResult): Promise<Response> => {
-    return staticIconRoute.handler(req, match);
-  },
+  handler: staticIconRoute.handler,
 };

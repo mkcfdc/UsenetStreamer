@@ -5,7 +5,8 @@ import { jsonResponse } from "../utils/responseUtils.ts";
 import { getMediaAndSearchResults } from "../utils/getMediaAndSearchResults.ts";
 import { parseRequestedEpisode } from "../utils/parseRequestedEpisode.ts";
 import { md5 } from "../utils/md5Encoder.ts";
-import { redis } from "../utils/redis.ts";
+import { keys, STREAM_TTL_SEC } from "../utils/cacheKeys.ts";
+import { getRedis } from "../utils/redis.ts";
 import { filenameParse as parseRelease } from "@ctrl/video-filename-parser";
 import { formatVideoCard } from "../utils/streamFilters.ts";
 import { checkNzb } from "../lib/nzbcheck.ts";
@@ -22,10 +23,7 @@ import {
 
 import type { RouteMatch, Stream } from "./types.ts";
 
-// --- CONSTANTS ---
-const NNTP_SERVERS = getActiveNntpServerUrls();
 const GIGABYTE = 1024 * 1024 * 1024;
-const STREAM_TTL = 172800; // 2 days in seconds
 
 export const streamRoute: RouteMatch = {
     pattern: new URLPattern({ pathname: "/:apiKey/stream/:type/:encodedParams" }),
@@ -44,19 +42,16 @@ export const streamRoute: RouteMatch = {
         try {
             const decoded = decodeURIComponent(encodedParams!).replace(REGEX_JSON_EXT, "");
 
-            // 1. Resolve Query Info
             const requestedInfo = type === "series"
                 ? parseRequestedEpisode(type, decoded) ?? {}
                 : { imdbid: decoded };
 
-            // 2. Fetch Search Results
-            const { results } = await getMediaAndSearchResults(type, requestedInfo);
+            const { results, searchKey } = await getMediaAndSearchResults(type, requestedInfo);
 
             if (!results || results.length === 0) {
                 return jsonResponse({ streams: [] });
             }
 
-            // 3. Prepare NZB Checks & Enrich Data
             const itemsToCheck: any[] = [];
             const validResults: any[] = [];
 
@@ -70,11 +65,9 @@ export const streamRoute: RouteMatch = {
                 }
             }
 
-            // 4. Batch NZB Check (Network)
             const nzbCheckResults = itemsToCheck.length ? await checkNzb(itemsToCheck) : { data: {} };
             const nzbData = (nzbCheckResults?.data ?? {}) as Record<string, any>;
 
-            // 5. Pre-Process & Group (Only Parsing, deferring Formatting)
             const grouped = new Map<string, any[]>();
             const isSeries = type === "series";
 
@@ -83,14 +76,11 @@ export const streamRoute: RouteMatch = {
                 const key = `${r.indexer.toLowerCase()}:${r.extractedGuid}`;
                 const status = nzbData[key];
 
-                // Filter incomplete immediately
                 if (status?.is_complete === false) continue;
 
                 r.is_complete = status?.is_complete ?? null;
 
                 const parsed = parseRelease(r.title, isSeries);
-
-                // OPTIMIZATION: Extract resolution directly instead of doing a dummy formatVideoCard call
                 const resolution = parsed.resolution || "Unknown";
 
                 r.resolution = resolution;
@@ -104,19 +94,19 @@ export const streamRoute: RouteMatch = {
                 group.push(r);
             }
 
-            // 6. Sort and Slice Winners
             const sortedResolutions = Array.from(grouped.keys())
                 .sort((a, b) => getResolutionRank(b) - getResolutionRank(a));
 
             const finalStreamsRaw: any[] = [];
+            const redis = getRedis();
             const getPipeline = redis.pipeline();
             const USE_NNTP = Config.USE_STREMIO_NNTP;
+            const nntpServers = USE_NNTP ? getActiveNntpServerUrls() : [];
 
             for (let i = 0; i < sortedResolutions.length; i++) {
                 const res = sortedResolutions[i];
                 const group = grouped.get(res)!;
 
-                // Sort by Age then Size, and limit to top 5
                 group.sort((a, b) => (a.age - b.age) || (b.size - a.size));
                 const limit = Math.min(group.length, 5);
 
@@ -124,23 +114,15 @@ export const streamRoute: RouteMatch = {
                     const r = group[j];
                     r.hash = md5(r.downloadUrl);
                     finalStreamsRaw.push(r);
-
-                    // Queue Redis GET
-                    getPipeline.call("JSON.GET", `streams:${r.hash}`, "$.viewPath");
+                    getPipeline.call("JSON.GET", keys.stream(r.hash), "$.viewPath");
                 }
             }
 
-            // 7. OPTIMIZATION: Fire the Redis Pipeline IMMEDIATELY
-            // This allows the network roundtrip to happen concurrently with our string formatting
             const cacheChecksPromise = finalStreamsRaw.length > 0 ? getPipeline.exec() : Promise.resolve([]);
 
-            // 8. Execute heavy CPU formatting while waiting for Redis
             for (let i = 0; i < finalStreamsRaw.length; i++) {
                 const r = finalStreamsRaw[i];
-
-                // Faster float formatting: trims zeros automatically via Number() cast
                 const sizeStr = Number((r.size / GIGABYTE).toFixed(2)).toString();
-
                 const { lines } = formatVideoCard(r.parsedInfo, {
                     size: sizeStr,
                     proxied: false,
@@ -149,14 +131,10 @@ export const streamRoute: RouteMatch = {
                     age: r.age,
                     grabs: r.grabs,
                 });
-
                 r.lines = lines;
             }
 
-            // 9. Await Redis results
             const cacheChecks = await cacheChecksPromise;
-
-            // 10. Construct Streams & Queue Redis SETs
             const setPipeline = redis.pipeline();
             const streams: Stream[] = [];
             const addonBase = Config.ADDON_BASE_URL;
@@ -164,13 +142,10 @@ export const streamRoute: RouteMatch = {
             for (let i = 0; i < finalStreamsRaw.length; i++) {
                 const r = finalStreamsRaw[i];
                 const hash = r.hash;
-
-                // Check Cache Result
                 const viewPathRaw = cacheChecks?.[i]?.[1];
                 const viewPath = parseRedisJsonScalar(viewPathRaw);
                 const prefix = (viewPath && viewPath.length > 0) ? "⚡" : "";
 
-                // Build Stream Object
                 const streamObj: Stream = {
                     name: normalizeStreamName(`${getResolutionIcon(r.resolution)} ${prefix} ${r.resolution}`),
                     title: r.lines,
@@ -183,41 +158,35 @@ export const streamRoute: RouteMatch = {
 
                 if (USE_NNTP) {
                     streamObj.nzbUrl = `${addonBase}/nzb/proxy/${hash}.nzb`;
-                    streamObj.servers = NNTP_SERVERS;
+                    streamObj.servers = nntpServers;
                 } else {
                     streamObj.url = `${addonBase}/${Config.ADDON_SHARED_SECRET}/nzb/stream/${hash}`;
                 }
 
                 streams.push(streamObj);
 
-                // Queue Cache Set
-                setPipeline.call(
-                    "JSON.SET",
-                    `streams:${hash}`,
-                    "$",
-                    JSON.stringify({
-                        downloadUrl: r.downloadUrl,
-                        title: r.title,
-                        size: r.size,
-                        guid: r.extractedGuid,
-                        indexer: r.indexer,
-                        type,
-                        fileName: r.fileName,
-                        rawImdbId: decoded,
-                    }),
-                    "NX",
-                );
-                // Expiration still runs even if NX skips the SET, giving you active-refreshing TTL!
-                setPipeline.expire(`streams:${hash}`, STREAM_TTL);
+                const streamKey = keys.stream(hash);
+                const meta = {
+                    downloadUrl: r.downloadUrl,
+                    title: r.title,
+                    size: r.size,
+                    guid: r.extractedGuid,
+                    indexer: r.indexer,
+                    type,
+                    fileName: r.fileName,
+                    rawImdbId: decoded,
+                    searchKey,
+                };
+                setPipeline.call("JSON.SET", streamKey, "$", JSON.stringify(meta), "NX");
+                setPipeline.call("JSON.MERGE", streamKey, "$", JSON.stringify({ searchKey, downloadUrl: r.downloadUrl, rawImdbId: decoded }));
+                setPipeline.expire(streamKey, STREAM_TTL_SEC);
             }
 
-            // 11. Fire SETs (must await to ensure V8/Deno completes them before GC sweep)
             if (streams.length > 0) {
                 await setPipeline.exec();
             }
 
             return jsonResponse({ streams });
-
         } catch (err) {
             console.error("Stream list error:", err);
             return jsonResponse({ error: "Failed to load streams" }, 502);

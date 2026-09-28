@@ -1,4 +1,4 @@
-import { define } from "../../utils.ts";
+import { define, getErrorMessage } from "../../utils.ts";
 import { Context } from "fresh/server";
 
 export const handler = define.handlers({
@@ -38,11 +38,15 @@ export const handler = define.handlers({
                     return new Response(JSON.stringify({ success: false, message: "Invalid Response. Is this a Newznab indexer?" }));
                 }
 
-            } catch (error: any) {
-                return new Response(JSON.stringify({ success: false, message: `Connection Failed: ${error.message}` }));
+            } catch (error) {
+                return new Response(JSON.stringify({
+                    success: false,
+                    message: `Connection Failed: ${getErrorMessage(error)}`
+                }));
             }
 
-        } catch (error: any) {
+        } catch (error) {
+            console.error("Test endpoint failed:", error);
             return new Response(JSON.stringify({ success: false, message: "Internal Server Error" }), { status: 500 });
         }
     },

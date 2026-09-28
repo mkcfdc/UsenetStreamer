@@ -1,5 +1,5 @@
 // routes/api/test_manifest.ts
-import { define } from "../../utils.ts";
+import { define, getErrorMessage } from "../../utils.ts";
 import { Context } from "fresh/server";
 
 export const handler = define.handlers({
@@ -57,15 +57,15 @@ export const handler = define.handlers({
                     }));
                 }
 
-            } catch (error: any) {
+            } catch (error) {
                 // Handle Network/DNS errors
                 return new Response(JSON.stringify({
                     success: false,
-                    message: `Connection Failed: ${error.message}`
+                    message: `Connection Failed: ${getErrorMessage(error)}`
                 }));
             }
 
-        } catch (error: any) {
+        } catch (error) {
             console.error("Manifest Test Error:", error);
             return new Response(JSON.stringify({
                 success: false,

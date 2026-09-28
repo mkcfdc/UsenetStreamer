@@ -192,8 +192,8 @@ export async function searchHydra(opts: HydraSearchOptions): Promise<HydraResult
                 };
             }).filter((x): x is HydraResult => x !== null);
 
-        } catch (error: any) {
-            console.error(`[Hydra] Plan failed (${logName}):`, error.message);
+        } catch (error) {
+            console.error(`[Hydra] Plan failed (${logName}):`, error instanceof Error ? error.message : error);
             return [];
         }
     });

@@ -11,4 +11,5 @@ docs/
 README.md
 indexer_presets.json
 docker-compose.yml
-usenetstreamer-frontend/
+usenetstreamer-frontend/node_modules
+usenetstreamer-frontend/_fresh

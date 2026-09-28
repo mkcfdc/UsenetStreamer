@@ -1,7 +1,7 @@
 export interface RouteMatch {
     pattern: URLPattern;
     methods: string[];
-    handler: (req: Request, match: URLPatternResult) => Promise<Response>;
+    handler: (req: Request, match: URLPatternResult) => Response | Promise<Response>;
 }
 
 export interface Stream {
@@ -20,7 +20,7 @@ export interface Stream {
 }
 
 export interface ProcessedResult {
-    result: any;
+    result: unknown;
     guid: string;
     indexer: string;
 }

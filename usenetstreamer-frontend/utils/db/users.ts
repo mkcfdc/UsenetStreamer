@@ -20,17 +20,21 @@ export const createUser = async (email: string, password: string) => {
 
         // result.lastInsertRowid is the ID of the new user
         return result.lastInsertRowid;
-    } catch (err: any) {
+    } catch (err) {
         // node:sqlite errors often look like:
         // [Error: SQLITE_CONSTRAINT: UNIQUE constraint failed: users.email]
 
         // specific check for Unique Constraint violation
-        if (err.message.includes("UNIQUE constraint failed")) {
+        const message = err instanceof Error ? err.message : String(err);
+        const code = typeof err === "object" && err !== null && "code" in err
+            ? err.code
+            : undefined;
+        if (message.includes("UNIQUE constraint failed")) {
             throw new Error("Email already exists");
         }
 
         // Or check code if available (ERR_SQLITE_ERROR is generic in some versions)
-        if (err.code === 'ERR_SQLITE_ERROR' && err.message.includes('UNIQUE')) {
+        if (code === "ERR_SQLITE_ERROR" && message.includes("UNIQUE")) {
             throw new Error("Email already exists");
         }
 
