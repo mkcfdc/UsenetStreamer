@@ -9,6 +9,8 @@ Stremio addon that searches Usenet indexers and streams the result through
 or optional [altMount](https://github.com/javi11/altmount). The addon does not
 host media.
 
+## This project is now archived. Deno has decided to sell out and will no longer be developed. I may port this to Bun in the future. It will continue to work just fine, I just won't put more work into it.
+
 This fork runs on **Deno 2** (`Deno.serve`) with Redis for stream/search cache
 and SQLite for settings/indexers. Configure it from the Fresh UI on port 8000.
 
